@@ -41,8 +41,14 @@ export class EmailTokenService {
     purpose: EmailTokenPurpose,
     tx?: PoolClient,
   ): Promise<{ userId: number; email: string } | null> {
-    const run = tx ?? this.db;
-    const { rows } = await run.query<{ user_id: number; email: string }>(SQL.consume, [hashToken(token), purpose]);
+    type Row = { user_id: number; email: string };
+    const params = [hashToken(token), purpose];
+    // Two explicit calls rather than `(tx ?? this.db).query(...)`: pg's
+    // PoolClient.query and our DatabaseService.query have different
+    // overloads, and TypeScript can't call a method on a union of them.
+    const { rows } = tx
+      ? await tx.query<Row>(SQL.consume, params)
+      : await this.db.query<Row>(SQL.consume, params);
     return rows[0] ? { userId: rows[0].user_id, email: rows[0].email } : null;
   }
 }
