@@ -271,12 +271,69 @@ Forgot password ──► "Reset your password" mail ──► /reset-password �
   scanners open every link in a message, and would otherwise use the token up.
 - Email-sending endpoints are rate limited: 3 per hour per address, 10 per hour per IP.
 
-**Sending real email:** `apps/api/src/mail/mailer.ts` defines a `Mailer` interface.
-In development, emails (with their links) are printed to the API console. In
-production the API refuses to start until you plug in a real provider (SMTP, SES,
-Resend, ...), because printing reset links to production logs would let anyone with
-log access take over accounts. Set `WEB_ORIGIN` to the site's public URL, since
-email links are built from it.
+**Testing emails locally (current setup):** no email account or key is needed.
+Emails are printed in the terminal running `npm run dev:api`, links included:
+
+```text
+── email to you@example.com ──
+Subject: Confirm your email address
+...
+http://localhost:3000/verify-email?token=...
+──────────
+```
+
+Sign up (or use "Forgot your password?"), copy the link from the API terminal into
+the browser, and click the button on the page. In production the API refuses to start
+with this console mailer, because printing reset links to production logs would let
+anyone with log access take over accounts. Set `WEB_ORIGIN` to the site's public URL,
+since email links are built from it.
+
+#### Later phase: sending real email over SMTP (Gmail App Password)
+
+Not built yet. The plan, so it can be picked up later:
+
+**1. Google account (one-time)**
+1. Turn on **2-Step Verification**: Google Account → Security. App Passwords only
+   exist with it on (they're also unavailable on Advanced Protection accounts and on
+   work/school accounts where an admin has disabled them).
+2. Open <https://myaccount.google.com/apppasswords>, name it `raw-feedback-platform`,
+   click **Create**, and copy the 16-character password. It is shown only once.
+
+**2. Settings in `.env`** (never committed; `.env` is git-ignored)
+
+```env
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=465                    # implicit TLS; 587 would use STARTTLS
+SMTP_USER=yourname@gmail.com
+SMTP_PASS=abcdefghijklmnop       # the App Password, spaces removed
+MAIL_FROM="Raw Feedback <yourname@gmail.com>"
+```
+
+**3. Code changes**
+- Add the `nodemailer` dependency to `apps/api`.
+- Add an `SmtpMailer implements Mailer` in `apps/api/src/mail/mailer.ts` that sends
+  through the settings above.
+- In `createMailer()`: use `SmtpMailer` when `SMTP_HOST` is set, otherwise
+  `LogMailer`; keep refusing to start in production when neither is configured.
+  Fail fast at startup if `SMTP_HOST` is set but `SMTP_USER`/`SMTP_PASS`/`MAIL_FROM`
+  are missing.
+- Add the variables (empty) to `.env.example`, and unit tests for the selection logic.
+
+Nothing else changes: the rest of the code only talks to the `Mailer` interface.
+
+**Gmail vs a dedicated email service**
+
+| | Gmail + App Password | Resend / Postmark / Amazon SES |
+|---|---|---|
+| Setup | ~5 minutes | Own domain + DNS records |
+| Volume | ~500 recipients/day (personal account) | Thousands+ |
+| From address | your Gmail address | `noreply@yourdomain.com` |
+| Inbox placement | fine for testing | better, with SPF/DKIM/DMARC on your domain |
+| Use for | development, demos | real users |
+
+The App Password lets anyone who has it send mail as you: keep it only in `.env`,
+and revoke it on the same page if it leaks. Before launching to real users, switch to
+an email service by writing one more `Mailer` class.
 
 ## Data Model
 
@@ -324,7 +381,7 @@ Posting feedback and upvoting require a logged-in user with a confirmed email.
 ## Roadmap
 
 1. ~~Project skeleton: schema, API, moderation, filters, duplicate detection~~
-2. ~~Username/password accounts~~, ~~login rate limiting~~, ~~email verification and password reset~~; next: a real email provider, "Sign in with Google"
+2. ~~Username/password accounts~~, ~~login rate limiting~~, ~~email verification and password reset~~; next: real email sending (SMTP via Gmail App Password for development, then an email service; see "Later phase" under Key Features 5), "Sign in with Google"
 3. Review queue for `pending_review` posts and user abuse reports
 4. Redis caching and rate limiting; BullMQ workers for moderation and counters
 5. Read replicas and a dedicated search engine as traffic grows
