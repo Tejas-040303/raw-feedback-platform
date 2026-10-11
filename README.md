@@ -73,36 +73,60 @@ apps/
       moderation/      rule-based + Claude moderators
       auth/            sign-up, login, sessions, password rules
       common/          name normalisation, validation
+    scripts/           cross-platform dev runner, migrate and seed commands
     test/              unit tests (no dependencies needed)
     test/db/           tests that run against a real Postgres
   web/                 Next.js frontend: filter page, post form, account pages
 db/
-  migrations/          SQL schema
+  migrations/          SQL schema, applied in order by apps/api/scripts/db.ts
   seed.sql             starter categories and users
 docker-compose.yml     Postgres 16 + Redis 7 for local development
 ```
 
 ## Getting Started
 
-Requirements: Node.js 22+, Docker (or a local PostgreSQL 15+), `psql`.
+Works the same on **Windows** (PowerShell or cmd), macOS and Linux: every
+`npm run` script is plain Node, with no bash syntax.
 
-```bash
-cp .env.example .env            # then fill in values; export them in your shell
-npm install
-npm run db:up                   # start Postgres + Redis
-npm run db:migrate
-npm run db:seed
-npm run dev:api                 # http://localhost:4000
-npm run dev:web                 # http://localhost:3000
-```
+Requirements: Node.js 22.9+ and Docker Desktop (or a local PostgreSQL 15+).
+
+1. Create your `.env` file in the repo root, then fill in values. The API and
+   the database scripts read it automatically, so you don't need to `export`
+   anything.
+
+   | Shell | Command |
+   |---|---|
+   | PowerShell | `Copy-Item .env.example .env` |
+   | cmd | `copy .env.example .env` |
+   | bash / zsh | `cp .env.example .env` |
+
+2. Install, start the database, and load the schema:
+
+   ```
+   npm install
+   npm run db:up          # Postgres + Redis in Docker
+   npm run db:migrate     # applies only migrations not yet applied; safe to re-run
+   npm run db:seed        # starter categories and users (run once)
+   ```
+
+3. Run the API and the web app, each in its own terminal:
+
+   ```
+   npm run dev:api        # http://localhost:4000
+   npm run dev:web        # http://localhost:3000
+   ```
 
 Tests:
 
-```bash
-npm test                                        # unit tests
-TEST_DATABASE_URL=postgres://rfp:rfp@localhost:5432/postgres \
-  npm run test:db -w apps/api                   # schema, constraints, triggers, filter SQL
 ```
+npm test                       # unit tests, no database needed
+npm run test:db -w apps/api    # schema, constraints, triggers, filter SQL
+```
+
+`test:db` uses `DATABASE_URL` from `.env` (or `TEST_DATABASE_URL` if set),
+creates a throwaway database there and drops it afterwards. It needs the
+`psql` command: on Windows, add PostgreSQL's `bin` folder (for example
+`C:\Program Files\PostgreSQL\16\bin`) to your PATH.
 
 ---
 
