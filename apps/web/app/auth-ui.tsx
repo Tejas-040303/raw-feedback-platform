@@ -1,8 +1,8 @@
 'use client';
 
-import { useId } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 
-// Small shared pieces for the login and signup pages.
+// Small shared pieces for the account pages (login, signup, email links).
 
 export const card: React.CSSProperties = {
   maxWidth: 400, margin: '40px auto', padding: 24, border: '1px solid #ddd', borderRadius: 8,
@@ -33,4 +33,26 @@ export function Field({ label, error, ...input }: FieldProps) {
       {error && <p id={errId} style={errorText}>{error}</p>}
     </div>
   );
+}
+
+/**
+ * Reads ?token=... from the email link, then removes it from the address
+ * bar so it doesn't stay in browser history or get shared by copy-paste.
+ */
+export function useTokenFromUrl(): string | null | undefined {
+  // undefined = not read yet (first render), null = no token in the URL.
+  const [token, setToken] = useState<string | null | undefined>(undefined);
+  // React runs effects twice in development (Strict Mode). Without this
+  // guard the second run would find the token already stripped from the URL
+  // and report "missing token".
+  const done = useRef(false);
+  useEffect(() => {
+    if (done.current) return;
+    done.current = true;
+    const url = new URL(window.location.href);
+    setToken(url.searchParams.get('token'));
+    url.searchParams.delete('token');
+    window.history.replaceState(null, '', url.pathname + url.search);
+  }, []);
+  return token;
 }

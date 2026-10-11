@@ -12,10 +12,21 @@ import { isIPv4, isIPv6 } from 'node:net';
  * A limit lockout is temporary on purpose. A permanent lock would let anyone
  * lock any user out of their account just by typing wrong passwords for it.
  */
-export const ACCOUNT_LIMIT = { max: 5, window: '15 minutes', lock: '15 minutes' } as const;
+export interface RateLimit {
+  max: number;      // attempts allowed per window
+  window: string;   // Postgres interval, e.g. '15 minutes'
+  lock: string;     // how long to block once max is exceeded
+}
+
+export const ACCOUNT_LIMIT: RateLimit = { max: 5, window: '15 minutes', lock: '15 minutes' };
 // Higher, because many honest users can share one IP (offices, mobile
 // carriers, university Wi-Fi all put people behind one address).
-export const IP_LIMIT = { max: 50, window: '15 minutes', lock: '15 minutes' } as const;
+export const IP_LIMIT: RateLimit = { max: 50, window: '15 minutes', lock: '15 minutes' };
+
+// Endpoints that send email. Each request costs us a real email and can
+// be used to flood someone's inbox, so these are much tighter.
+export const MAIL_PER_RECIPIENT: RateLimit = { max: 3, window: '1 hour', lock: '1 hour' };
+export const MAIL_PER_IP: RateLimit = { max: 10, window: '1 hour', lock: '1 hour' };
 
 /**
  * Key for the account being attacked. An existing account is keyed by id, so

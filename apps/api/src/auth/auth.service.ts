@@ -1,4 +1,4 @@
-import { Injectable, UnauthorizedException } from '@nestjs/common';
+import { ForbiddenException, Injectable, UnauthorizedException } from '@nestjs/common';
 import { DatabaseService } from '../database/database.service.ts';
 import { hashSessionToken, newSessionToken, readCookie, SESSION_COOKIE, SESSION_TTL_DAYS } from './session-token.ts';
 
@@ -6,6 +6,8 @@ export interface SessionUser {
   id: number;
   username: string;
   full_name: string;
+  email: string | null;
+  email_verified: boolean;
 }
 
 @Injectable()
@@ -33,7 +35,8 @@ export class AuthService {
     const token = readCookie(cookieHeader, SESSION_COOKIE);
     if (!token) return null;
     const { rows } = await this.db.query<SessionUser>(
-      `SELECT u.id::int AS id, u.username, u.full_name
+      `SELECT u.id::int AS id, u.username, u.full_name, u.email,
+              u.email_verified_at IS NOT NULL AS email_verified
        FROM sessions s JOIN users u ON u.id = s.user_id
        WHERE s.token_hash = $1 AND s.expires_at > now()`,
       [hashSessionToken(token)],
@@ -44,6 +47,18 @@ export class AuthService {
   async requireUser(cookieHeader: string | undefined): Promise<SessionUser> {
     const user = await this.userFromCookie(cookieHeader);
     if (!user) throw new UnauthorizedException({ code: 'NOT_LOGGED_IN' });
+    return user;
+  }
+
+  /**
+   * Logged in AND has confirmed their email. Required for posting, so
+   * throwaway accounts with made-up addresses can't flood the platform.
+   */
+  async requireVerifiedUser(cookieHeader: string | undefined): Promise<SessionUser> {
+    const user = await this.requireUser(cookieHeader);
+    if (!user.email_verified) {
+      throw new ForbiddenException({ code: 'EMAIL_NOT_VERIFIED', message: 'Please confirm your email address first.' });
+    }
     return user;
   }
 }

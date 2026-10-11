@@ -4,6 +4,7 @@ import { CategoriesController } from './categories/categories.controller.ts';
 import { DatabaseModule } from './database/database.module.ts';
 import { DatabaseService } from './database/database.service.ts';
 import { EntitiesController } from './entities/entities.controller.ts';
+import { MailModule } from './mail/mail.module.ts';
 import { FeedbackController } from './feedback/feedback.controller.ts';
 import { ModerationModule } from './moderation/moderation.module.ts';
 
@@ -19,7 +20,7 @@ class HealthController {
 }
 
 @Module({
-  imports: [DatabaseModule, AuthModule, ModerationModule],
+  imports: [DatabaseModule, MailModule, AuthModule, ModerationModule],
   controllers: [HealthController, CategoriesController, EntitiesController, FeedbackController],
 })
 export class AppModule {}

@@ -83,7 +83,7 @@ export class FeedbackController {
     @Body() body: unknown,
     @Res({ passthrough: true }) res: Response,
   ) {
-    const userId = (await this.auth.requireUser(cookie)).id;
+    const userId = (await this.auth.requireVerifiedUser(cookie)).id;
     const input = parse(CreateFeedback, body);
 
     const entity = await this.db.query('SELECT 1 FROM entities WHERE id = $1', [input.entityId]);
@@ -134,7 +134,7 @@ export class FeedbackController {
   @Post(':id/upvote')
   @HttpCode(204)
   async upvote(@Headers('cookie') cookie: string | undefined, @Param('id', ParseIntPipe) id: number) {
-    const userId = (await this.auth.requireUser(cookie)).id;
+    const userId = (await this.auth.requireVerifiedUser(cookie)).id;
     const { rowCount } = await this.db.query(
       `INSERT INTO feedback_votes (feedback_id, user_id)
        SELECT id, $2 FROM feedback WHERE id = $1 AND status = 'published'
@@ -150,7 +150,7 @@ export class FeedbackController {
   @Delete(':id/upvote')
   @HttpCode(204)
   async removeUpvote(@Headers('cookie') cookie: string | undefined, @Param('id', ParseIntPipe) id: number) {
-    const userId = (await this.auth.requireUser(cookie)).id;
+    const userId = (await this.auth.requireVerifiedUser(cookie)).id;
     await this.db.query('DELETE FROM feedback_votes WHERE feedback_id = $1 AND user_id = $2', [id, userId]);
   }
 }

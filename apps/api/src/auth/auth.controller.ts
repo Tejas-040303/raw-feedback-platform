@@ -7,6 +7,7 @@ import { z } from 'zod';
 import { parse } from '../common/validation.ts';
 import { DatabaseService, UNIQUE_VIOLATION } from '../database/database.service.ts';
 import { isEmail, validateSignup } from './account-rules.ts';
+import { AccountMailService } from './account-mail.service.ts';
 import { AuthService } from './auth.service.ts';
 import { accountKey, ipKey } from './login-throttle.ts';
 import { LoginThrottleService } from './login-throttle.service.ts';
@@ -40,6 +41,7 @@ export class AuthController {
     private readonly db: DatabaseService,
     private readonly auth: AuthService,
     private readonly throttle: LoginThrottleService,
+    private readonly mail: AccountMailService,
   ) {}
 
   @Post('register')
@@ -51,10 +53,10 @@ export class AuthController {
     const passwordHash = await hashPassword(input.password);
     let user;
     try {
-      const { rows } = await this.db.query<{ id: number; username: string; full_name: string }>(
+      const { rows } = await this.db.query<{ id: number; username: string; full_name: string; email: string }>(
         `INSERT INTO users (display_name, full_name, username, email, date_of_birth, password_hash)
          VALUES ($1, $2, $1, $3, $4, $5)
-         RETURNING id::int AS id, username, full_name`,
+         RETURNING id::int AS id, username, full_name, email`,
         [input.username, input.name.trim(), input.email.trim(), input.dateOfBirth, passwordHash],
       );
       user = rows[0];
@@ -70,9 +72,12 @@ export class AuthController {
       throw new ConflictException({ code: 'ALREADY_EXISTS', errors });
     }
 
+    // The account exists at this point, so a mail problem must not fail the
+    // sign-up: the user can ask for another email from the site.
+    await this.mail.sendVerification(user).catch((err) => console.error('verification mail failed', err));
     res.setHeader('Set-Cookie', sessionCookie(await this.auth.createSession(user.id), TTL_SECONDS, SECURE_COOKIES));
     res.status(201);
-    return { user };
+    return { user: { ...user, email_verified: false } };
   }
 
   @Post('login')
@@ -80,8 +85,8 @@ export class AuthController {
   async login(@Body() body: unknown, @Req() req: Request, @Res({ passthrough: true }) res: Response) {
     const { identifier, password } = parse(LoginBody, body);
     const column = isEmail(identifier) ? 'email' : 'username';
-    const { rows } = await this.db.query<{ id: number; username: string; full_name: string; password_hash: string | null }>(
-      `SELECT id::int AS id, username, full_name, password_hash
+    const { rows } = await this.db.query<{ id: number; username: string; full_name: string; password_hash: string | null; email_verified: boolean }>(
+      `SELECT id::int AS id, username, full_name, password_hash, email_verified_at IS NOT NULL AS email_verified
        FROM users WHERE lower(${column}) = lower($1)`,
       [identifier],
     );
@@ -109,7 +114,7 @@ export class AuthController {
     // A brand-new token on every login. Reusing a token from before login
     // would allow session fixation.
     res.setHeader('Set-Cookie', sessionCookie(await this.auth.createSession(user.id), TTL_SECONDS, SECURE_COOKIES));
-    return { user: { id: user.id, username: user.username, full_name: user.full_name } };
+    return { user: { id: user.id, username: user.username, full_name: user.full_name, email_verified: user.email_verified } };
   }
 
   @Post('logout')

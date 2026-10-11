@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { DatabaseService } from '../database/database.service.ts';
-import { ACCOUNT_LIMIT, IP_LIMIT } from './login-throttle.ts';
+import { ACCOUNT_LIMIT, IP_LIMIT, type RateLimit } from './login-throttle.ts';
 
 @Injectable()
 export class LoginThrottleService {
@@ -20,7 +20,15 @@ export class LoginThrottleService {
     return Math.max(ip, account);
   }
 
-  private async attempt(key: string, limit: { max: number; window: string; lock: string }): Promise<number> {
+  /**
+   * Generic form of the same limiter, for other abuse-prone endpoints
+   * (e.g. "send me a reset email"). Returns seconds to wait, 0 if allowed.
+   */
+  limit(key: string, limit: RateLimit): Promise<number> {
+    return this.attempt(key, limit);
+  }
+
+  private async attempt(key: string, limit: RateLimit): Promise<number> {
     const { rows } = await this.db.query<{ allowed: boolean; retry_after_seconds: number }>(
       'SELECT * FROM login_attempt($1, $2, $3::interval, $4::interval)',
       [key, limit.max, limit.window, limit.lock],

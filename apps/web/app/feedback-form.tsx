@@ -15,12 +15,22 @@ export function FeedbackForm() {
   const [message, setMessage] = useState('');
   const [rejection, setRejection] = useState<Rejection | null>(null);
   const [busy, setBusy] = useState(false);
+  const [needsVerification, setNeedsVerification] = useState(false);
+
+  async function resendVerification() {
+    const res = await fetch(`${API_URL}/auth/resend-verification`, { method: 'POST', credentials: 'include' });
+    setNeedsVerification(false);
+    setMessage(res.status === 429
+      ? 'We’ve already sent several emails. Please check your inbox (and spam) or try again later.'
+      : 'Sent! Check your inbox for the confirmation link.');
+  }
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setBusy(true);
     setMessage('');
     setRejection(null);
+    setNeedsVerification(false);
     try {
       const res = await fetch(`${API_URL}/feedback`, {
         method: 'POST',
@@ -33,6 +43,8 @@ export function FeedbackForm() {
         setRejection({ explanation: data.explanation, suggestedRewrite: data.suggestedRewrite });
       } else if (res.status === 401) {
         setMessage('Please log in to post feedback.');
+      } else if (res.status === 403 && data.code === 'EMAIL_NOT_VERIFIED') {
+        setNeedsVerification(true);
       } else if (res.status === 202) {
         setMessage('Thanks! Your feedback is being reviewed and will appear shortly.');
         setBody('');
@@ -77,6 +89,12 @@ export function FeedbackForm() {
       )}
 
       <button type="submit" disabled={busy}>{busy ? 'Checking…' : 'Post'}</button>
+      {needsVerification && (
+        <p role="alert">
+          Please confirm your email address before posting.{' '}
+          <button type="button" onClick={resendVerification}>Resend confirmation email</button>
+        </p>
+      )}
       {message && <p>{message}</p>}
     </form>
   );
