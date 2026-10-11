@@ -11,6 +11,14 @@ export const card: React.CSSProperties = {
 export const button: React.CSSProperties = { padding: '10px 14px', fontSize: 16, cursor: 'pointer' };
 export const errorText: React.CSSProperties = { color: '#b00020', fontSize: 14, margin: 0 };
 
+/** "15 minutes", "1 hour", "24 hours", from a 429's retryAfterSeconds. */
+export function waitText(seconds: number | undefined): string {
+  const minutes = Math.max(1, Math.ceil((seconds ?? 3600) / 60));
+  if (minutes < 60) return `${minutes} minute${minutes === 1 ? '' : 's'}`;
+  const hours = Math.ceil(minutes / 60);
+  return `${hours} hour${hours === 1 ? '' : 's'}`;
+}
+
 interface FieldProps extends React.InputHTMLAttributes<HTMLInputElement> {
   label: string;
   error?: string;

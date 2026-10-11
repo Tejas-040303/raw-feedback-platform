@@ -19,6 +19,7 @@ import { buildFeedbackQuery, encodeCursor, type FeedbackFilters } from '../../sr
 import { cityKey, nameKey } from '../../src/common/normalize.ts';
 import { SQL as TOKEN_SQL } from '../../src/auth/email-token-sql.ts';
 import { hashSessionToken } from '../../src/auth/session-token.ts';
+import { ipKey, REGISTER_PER_IP_DAY, REGISTER_PER_IP_HOUR, type RateLimit } from '../../src/auth/login-throttle.ts';
 
 const ADMIN_URL = process.env.TEST_DATABASE_URL ?? process.env.DATABASE_URL ?? 'postgres://rfp:rfp@localhost:5432/postgres';
 const DB = `rfp_test_${process.pid}`;
@@ -274,6 +275,24 @@ test('throttle: 20 simultaneous attempts against a limit of 5 allow exactly 5', 
   ));
   const allowed = results.filter((r) => r.stdout.trim() === 't').length;
   assert.equal(allowed, 5);
+});
+
+test('sign-up limit: 10 per hour per network, and refused requests do not use up the daily allowance', () => {
+  const ip = ipKey('203.0.113.50');
+  const limit = (key: string, l: RateLimit) => {
+    const [allowed, wait] = attempt(key, l.max, l.window, l.lock).split(',');
+    return allowed === 'true' ? 0 : Number(wait);
+  };
+  // Same order and short-circuit as AuthController.register.
+  const register = () => limit(`register:hour:${ip}`, REGISTER_PER_IP_HOUR) || limit(`register:day:${ip}`, REGISTER_PER_IP_DAY);
+
+  const waits = Array.from({ length: 13 }, register);
+  assert.deepEqual(waits.slice(0, 10), Array(10).fill(0));
+  for (const w of waits.slice(10)) assert.ok(w > 3500 && w <= 3600, `expected ~1 hour, got ${w}`);
+  assert.equal(sql(`SELECT attempts FROM login_throttle WHERE key = 'register:day:${ip}'`), '10');
+
+  // A different network is unaffected.
+  assert.equal(limit(`register:hour:${ipKey('203.0.113.51')}`, REGISTER_PER_IP_HOUR), 0);
 });
 
 // ── Email verification and password reset (004_email_tokens.sql) ───────

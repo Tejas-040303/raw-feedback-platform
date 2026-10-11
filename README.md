@@ -242,6 +242,16 @@ How it is secured:
   get `429` with a `Retry-After` header. Counters live in Postgres, so the
   limits hold across several API instances. Set `TRUST_PROXY` to the number of
   proxies in front of the API, or every user will share the proxy's IP.
+- **Sign-ups are rate limited per network:** 10 per hour and 30 per day per IP
+  (IPv6: per /64), then `429` with `Retry-After`. Each sign-up costs a
+  password hash (CPU and 64 MiB of memory), and repeated "username taken" or
+  "email already registered" answers reveal who has an account; the limit slows
+  both down. Attempts are counted after the form is validated but before the
+  password is hashed, so typos don't count and refused requests are cheap.
+  It doesn't stop a botnet spread over many IPs; that needs a CAPTCHA or
+  similar challenge. A large group signing up from one office or campus
+  network (more than 10 in an hour) will hit it, so raise
+  `REGISTER_PER_IP_HOUR` in `login-throttle.ts` if that's expected.
 
 ### 5. Email verification and password reset
 

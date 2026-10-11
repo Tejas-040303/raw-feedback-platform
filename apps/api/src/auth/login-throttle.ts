@@ -28,6 +28,15 @@ export const IP_LIMIT: RateLimit = { max: 50, window: '15 minutes', lock: '15 mi
 export const MAIL_PER_RECIPIENT: RateLimit = { max: 3, window: '1 hour', lock: '1 hour' };
 export const MAIL_PER_IP: RateLimit = { max: 10, window: '1 hour', lock: '1 hour' };
 
+// Sign-ups, per client network. Every attempt that passes validation counts,
+// including ones rejected as "username taken", because each one costs a
+// scrypt hash (CPU and 64 MiB of memory) and probes which names and emails
+// exist. Two windows: the hourly one stops bursts, the daily one stops a bot
+// that stays just under the hourly limit all day. Both leave room for a
+// household or an office signing up together.
+export const REGISTER_PER_IP_HOUR: RateLimit = { max: 10, window: '1 hour', lock: '1 hour' };
+export const REGISTER_PER_IP_DAY: RateLimit = { max: 30, window: '24 hours', lock: '24 hours' };
+
 /**
  * Key for the account being attacked. An existing account is keyed by id, so
  * logging in by username or by email shares one counter. A name with no
