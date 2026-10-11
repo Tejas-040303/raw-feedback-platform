@@ -1,14 +1,19 @@
 {
   "name": "@rfp/api",
   "private": true,
+  "engines": {
+    "node": ">=22.9"
+  },
   "type": "module",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "start": "node dist/main.js",
-    "dev": "tsc -p tsconfig.json --watch --preserveWatchOutput & node --watch dist/main.js",
+    "start": "node --env-file-if-exists=../../.env dist/main.js",
+    "dev": "node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/dev.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node --experimental-strip-types --test test/*.test.ts",
-    "test:db": "node --experimental-strip-types --test test/db/*.test.ts"
+    "test": "node --experimental-strip-types --disable-warning=ExperimentalWarning --test \"test/*.test.ts\"",
+    "test:db": "node --experimental-strip-types --disable-warning=ExperimentalWarning --env-file-if-exists=../../.env --test \"test/db/*.test.ts\"",
+    "db:migrate": "node --experimental-strip-types --disable-warning=ExperimentalWarning --env-file-if-exists=../../.env scripts/db.ts migrate",
+    "db:seed": "node --experimental-strip-types --disable-warning=ExperimentalWarning --env-file-if-exists=../../.env scripts/db.ts seed"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "latest",

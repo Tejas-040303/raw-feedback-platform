@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 import { API_URL } from '../api';
 import { PASSWORD_RULES, validateSignup, type SignupErrors, type SignupInput } from '../account-rules';
-import { button, card, errorText, Field } from '../auth-ui';
+import { button, card, errorText, Field, waitText } from '../auth-ui';
 
 const EMPTY: SignupInput = { name: '', dateOfBirth: '', email: '', username: '', password: '', confirmPassword: '' };
 
@@ -52,6 +52,10 @@ export default function SignupPage() {
         return;
       }
       const data = await res.json().catch(() => ({}));
+      if (res.status === 429) {
+        setFormError(`Too many accounts have been created from your network. Please try again in ${waitText(data.retryAfterSeconds)}.`);
+        return;
+      }
       if (data.errors) setServerErrors(data.errors);   // e.g. username taken
       else setFormError('Something went wrong. Please try again.');
     } catch {

@@ -9,7 +9,7 @@ import { DatabaseService, UNIQUE_VIOLATION } from '../database/database.service.
 import { isEmail, validateSignup } from './account-rules.ts';
 import { AccountMailService } from './account-mail.service.ts';
 import { AuthService } from './auth.service.ts';
-import { accountKey, ipKey } from './login-throttle.ts';
+import { accountKey, ipKey, REGISTER_PER_IP_DAY, REGISTER_PER_IP_HOUR } from './login-throttle.ts';
 import { LoginThrottleService } from './login-throttle.service.ts';
 import { getDummyHash, hashPassword, verifyPassword } from './password-hash.ts';
 import { sessionCookie, SESSION_TTL_DAYS } from './session-token.ts';
@@ -45,10 +45,25 @@ export class AuthController {
   ) {}
 
   @Post('register')
-  async register(@Body() body: unknown, @Res({ passthrough: true }) res: Response) {
+  async register(@Body() body: unknown, @Req() req: Request, @Res({ passthrough: true }) res: Response) {
     const input = parse(SignupBody, body);
     const errors = validateSignup(input);
     if (Object.keys(errors).length) throw new BadRequestException({ code: 'VALIDATION_FAILED', errors });
+
+    // Counted after validation (cheap, and the web form catches typos before
+    // sending) but before hashing and the INSERT (the expensive part).
+    // `||` stops at the first limit that says wait, so requests already
+    // refused by the hourly limit don't also use up the daily allowance.
+    const ip = ipKey(req.ip);
+    const waitSeconds = (await this.throttle.limit(`register:hour:${ip}`, REGISTER_PER_IP_HOUR))
+      || (await this.throttle.limit(`register:day:${ip}`, REGISTER_PER_IP_DAY));
+    if (waitSeconds > 0) {
+      res.setHeader('Retry-After', String(waitSeconds));
+      throw new HttpException(
+        { code: 'TOO_MANY_SIGNUPS', message: 'Too many accounts created from your network.', retryAfterSeconds: waitSeconds },
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+    }
 
     const passwordHash = await hashPassword(input.password);
     let user;

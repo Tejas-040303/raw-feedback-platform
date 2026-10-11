@@ -2,24 +2,26 @@
  * Applies every migration in db/migrations, then runs the real generated SQL
  * against Postgres.
  *
- *   TEST_DATABASE_URL=postgres://rfp:rfp@localhost:5432/postgres npm run test:db
+ *   npm run test:db
  *
- * Creates (and drops) a throwaway database, so point it at a server where
+ * Connects with TEST_DATABASE_URL, else DATABASE_URL (from .env). Creates
+ * (and drops) a throwaway database there, so point it at a server where
  * that's allowed. Uses the psql CLI instead of the pg driver so it has no
- * npm dependencies.
+ * npm dependencies; on Windows, put PostgreSQL's bin folder on your PATH.
  */
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
-import { readdirSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { buildFeedbackQuery, encodeCursor, type FeedbackFilters } from '../../src/feedback/feedback-query.ts';
 import { cityKey, nameKey } from '../../src/common/normalize.ts';
 import { SQL as TOKEN_SQL } from '../../src/auth/email-token-sql.ts';
 import { hashSessionToken } from '../../src/auth/session-token.ts';
+import { ipKey, REGISTER_PER_IP_DAY, REGISTER_PER_IP_HOUR, type RateLimit } from '../../src/auth/login-throttle.ts';
 
-const ADMIN_URL = process.env.TEST_DATABASE_URL ?? 'postgres://rfp:rfp@localhost:5432/postgres';
+const ADMIN_URL = process.env.TEST_DATABASE_URL ?? process.env.DATABASE_URL ?? 'postgres://rfp:rfp@localhost:5432/postgres';
 const DB = `rfp_test_${process.pid}`;
 const url = ADMIN_URL.replace(/\/[^/]*$/, `/${DB}`);
 const migrationsDir = fileURLToPath(new URL('../../../../db/migrations/', import.meta.url));
@@ -51,7 +53,9 @@ const feed = (f: FeedbackFilters) => {
 
 before(() => {
   psql(ADMIN_URL, `CREATE DATABASE ${DB}`);
-  for (const m of migrations) sql(`\\i ${migrationsDir}${m}`);
+  // Send the file contents rather than `\i <path>`: a Windows path like
+  // C:\Users\... would be read by psql as a string of backslash commands.
+  for (const m of migrations) sql(readFileSync(`${migrationsDir}${m}`, 'utf8'));
   sql(`
     INSERT INTO users (display_name) VALUES ('a'), ('b'), ('c');
     INSERT INTO categories (name, name_key, slug) VALUES ('Restaurants', 'restaurants', 'restaurants'),
@@ -271,6 +275,24 @@ test('throttle: 20 simultaneous attempts against a limit of 5 allow exactly 5', 
   ));
   const allowed = results.filter((r) => r.stdout.trim() === 't').length;
   assert.equal(allowed, 5);
+});
+
+test('sign-up limit: 10 per hour per network, and refused requests do not use up the daily allowance', () => {
+  const ip = ipKey('203.0.113.50');
+  const limit = (key: string, l: RateLimit) => {
+    const [allowed, wait] = attempt(key, l.max, l.window, l.lock).split(',');
+    return allowed === 'true' ? 0 : Number(wait);
+  };
+  // Same order and short-circuit as AuthController.register.
+  const register = () => limit(`register:hour:${ip}`, REGISTER_PER_IP_HOUR) || limit(`register:day:${ip}`, REGISTER_PER_IP_DAY);
+
+  const waits = Array.from({ length: 13 }, register);
+  assert.deepEqual(waits.slice(0, 10), Array(10).fill(0));
+  for (const w of waits.slice(10)) assert.ok(w > 3500 && w <= 3600, `expected ~1 hour, got ${w}`);
+  assert.equal(sql(`SELECT attempts FROM login_throttle WHERE key = 'register:day:${ip}'`), '10');
+
+  // A different network is unaffected.
+  assert.equal(limit(`register:hour:${ipKey('203.0.113.51')}`, REGISTER_PER_IP_HOUR), 0);
 });
 
 // ── Email verification and password reset (004_email_tokens.sql) ───────
