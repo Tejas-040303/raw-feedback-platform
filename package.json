@@ -4,7 +4,7 @@
   "workspaces": ["apps/*"],
   "scripts": {
     "db:up": "docker compose up -d postgres redis",
-    "db:migrate": "psql \"$DATABASE_URL\" -v ON_ERROR_STOP=1 -f db/migrations/001_init.sql",
+    "db:migrate": "for f in db/migrations/*.sql; do psql \"$DATABASE_URL\" -v ON_ERROR_STOP=1 -f \"$f\" || exit 1; done",
     "db:seed": "psql \"$DATABASE_URL\" -v ON_ERROR_STOP=1 -f db/seed.sql",
     "dev:api": "npm run dev -w apps/api",
     "dev:web": "npm run dev -w apps/web",

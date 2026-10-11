@@ -13,7 +13,7 @@ Category   →  Restaurants, Travel, Automobiles, Companies, Government, NGOs, .
 ```
 
 > **Status:** project skeleton. The database schema, API, moderation and filtering
-> logic are in place and tested. Authentication is a placeholder, and Redis, the job
+> logic, plus username/password accounts, are in place and tested. Redis, the job
 > queue and the dedicated search engine are still planned.
 
 ---
@@ -70,10 +70,11 @@ apps/
       entities/        search/create entities, duplicate detection
       feedback/        list with filters, post, upvote
       moderation/      rule-based + Claude moderators
-      common/          name normalisation, validation, placeholder auth
+      auth/            sign-up, login, sessions, password rules
+      common/          name normalisation, validation
     test/              unit tests (no dependencies needed)
     test/db/           tests that run against a real Postgres
-  web/                 Next.js frontend: filter page + post form
+  web/                 Next.js frontend: filter page, post form, /login, /signup
 db/
   migrations/          SQL schema
   seed.sql             starter categories and users
@@ -178,13 +179,40 @@ and `minAvgRating`, sorted by `rating`, `popular` or `name`.
 
 ---
 
+### 4. Accounts
+
+`/signup` asks for name, date of birth, email, username, password and confirmation;
+`/login` takes a username **or** email plus password.
+
+| Rule | |
+|------|-|
+| Password | 8–14 characters, with a lower-case letter, an upper-case letter, a number and a special character |
+| Username | 3–30 characters: letters, numbers, `_` and `.`; unique ignoring case |
+| Email | unique ignoring case |
+| Date of birth | a real date in the past; minimum age 13 |
+
+The rules live in one file, `apps/api/src/auth/account-rules.ts`. The signup page uses
+a copy of it (`apps/web/app/account-rules.ts`) to check fields as you type, and a test
+fails if the two copies differ. The API always re-checks: browser checks can be bypassed.
+
+How it is secured:
+
+- Passwords are stored as **scrypt** hashes with a random salt, never in plain text.
+- After login the browser gets a random session token in an **HttpOnly, SameSite=Lax**
+  cookie. JavaScript can't read it, and other sites can't make the browser send it on a
+  POST. The database stores only the token's SHA-256 hash.
+- Login gives the same error, and takes the same time, whether the username doesn't
+  exist or the password is wrong, so it doesn't reveal which accounts exist.
+- Sessions last 30 days. Logging out deletes the session on the server.
+
 ## Data Model
 
 ```text
 categories        (id, parent_id, name, name_key, slug)
 entities          (id, category_id, name, name_key, country_code, region, city, city_key,
                    attributes JSONB, avg_rating, rating_count, feedback_count)
-users             (id, display_name)
+users             (id, display_name, full_name, username, email, date_of_birth, password_hash)
+sessions          (token_hash, user_id, expires_at)
 feedback          (id, entity_id, user_id, body, rating, status, upvotes, search_tsv)
 feedback_votes    (feedback_id, user_id)          one vote per user, enforced by the primary key
 moderation_events (user_id, entity_id, decision, categories, provider)
@@ -205,17 +233,19 @@ moderation_events (user_id, entity_id, decision, categories, provider)
 | GET | `/entities/:id` | one entity |
 | GET / POST | `/feedback` | filter / post (with moderation) |
 | POST / DELETE | `/feedback/:id/upvote` | upvote / remove upvote (idempotent) |
+| POST | `/auth/register` | create account and log in |
+| POST | `/auth/login` | log in with username or email |
+| POST | `/auth/logout` | end the current session |
+| GET | `/auth/me` | the logged-in user |
 
-> **Auth is a placeholder.** Write endpoints read the user id from an `x-user-id`
-> header so the skeleton can be tried end to end. Replace it with OAuth/OIDC before
-> deploying anything.
+Posting feedback and upvoting require a logged-in user.
 
 ---
 
 ## Roadmap
 
 1. ~~Project skeleton: schema, API, moderation, filters, duplicate detection~~
-2. Real authentication (OAuth/OIDC) replacing the `x-user-id` placeholder
+2. ~~Username/password accounts~~; next: email verification, password reset, login rate limiting, "Sign in with Google"
 3. Review queue for `pending_review` posts and user abuse reports
 4. Redis caching and rate limiting; BullMQ workers for moderation and counters
 5. Read replicas and a dedicated search engine as traffic grows

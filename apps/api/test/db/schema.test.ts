@@ -1,5 +1,6 @@
 /**
- * Runs the real migration and the real generated SQL against Postgres.
+ * Applies every migration in db/migrations, then runs the real generated SQL
+ * against Postgres.
  *
  *   TEST_DATABASE_URL=postgres://rfp:rfp@localhost:5432/postgres npm run test:db
  *
@@ -10,6 +11,7 @@
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
+import { readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { buildFeedbackQuery, encodeCursor, type FeedbackFilters } from '../../src/feedback/feedback-query.ts';
 import { cityKey, nameKey } from '../../src/common/normalize.ts';
@@ -17,7 +19,8 @@ import { cityKey, nameKey } from '../../src/common/normalize.ts';
 const ADMIN_URL = process.env.TEST_DATABASE_URL ?? 'postgres://rfp:rfp@localhost:5432/postgres';
 const DB = `rfp_test_${process.pid}`;
 const url = ADMIN_URL.replace(/\/[^/]*$/, `/${DB}`);
-const migration = fileURLToPath(new URL('../../../../db/migrations/001_init.sql', import.meta.url));
+const migrationsDir = fileURLToPath(new URL('../../../../db/migrations/', import.meta.url));
+const migrations = readdirSync(migrationsDir).filter((f) => f.endsWith('.sql')).sort();
 
 function psql(target: string, input: string): string {
   return execFileSync('psql', [target, '-X', '-q', '-At', '-v', 'ON_ERROR_STOP=1'], {
@@ -44,7 +47,7 @@ const feed = (f: FeedbackFilters) => {
 
 before(() => {
   psql(ADMIN_URL, `CREATE DATABASE ${DB}`);
-  sql(`\\i ${migration}`);
+  for (const m of migrations) sql(`\\i ${migrationsDir}${m}`);
   sql(`
     INSERT INTO users (display_name) VALUES ('a'), ('b'), ('c');
     INSERT INTO categories (name, name_key, slug) VALUES ('Restaurants', 'restaurants', 'restaurants'),
@@ -161,4 +164,48 @@ test('the newest-first feed uses an index, not a full scan', () => {
   const { sql: text, params } = buildFeedbackQuery({ sort: 'newest', limit: 20 });
   const plan = sql(`EXPLAIN ${text} \\bind ${params.map((v) => `'${v}'`).join(' ')} \\g`);
   assert.match(plan, /feedback_new_idx/);
+});
+
+// ── Accounts (002_auth.sql) ─────────────────────────────────────────────
+
+const addUser = (username: string, email: string, dob = '2000-01-01') =>
+  `INSERT INTO users (display_name, full_name, username, email, date_of_birth, password_hash)
+   VALUES ('${username}', 'Test', '${username}', '${email}', '${dob}', 'x')`;
+
+test('usernames and emails are unique regardless of case', () => {
+  sql(addUser('Tejas', 'Tejas@Example.com'));
+  expectUniqueViolation(addUser('tejas', 'other@example.com'));
+  expectUniqueViolation(addUser('someone', 'tejas@example.COM'));
+});
+
+test('existing users without account details are still allowed', () => {
+  // Rows from before 002 have NULL username/email; the unique indexes and
+  // CHECKs must not reject them (NULL passes a CHECK, and NULLs never clash
+  // in a plain unique index).
+  sql(`INSERT INTO users (display_name) VALUES ('legacy1'), ('legacy2')`);
+});
+
+test('database rejects bad usernames and future birth dates even if the API is bypassed', () => {
+  assert.throws(() => sql(addUser('a b', 'ab@example.com')), /users_username_format/);
+  assert.throws(() => sql(addUser('future', 'f@example.com', '2999-01-01')), /users_dob_past/);
+});
+
+test('sessions: deleting a user logs them out everywhere', () => {
+  sql(addUser('leaver', 'leaver@example.com'));
+  sql(`INSERT INTO sessions (token_hash, user_id, expires_at)
+       SELECT sha256(convert_to(g::text, 'UTF8')), id, now() + interval '1 day'
+       FROM users, generate_series(1, 3) g WHERE username = 'leaver'`);
+  assert.equal(sql(`SELECT count(*) FROM sessions s JOIN users u ON u.id = s.user_id WHERE u.username = 'leaver'`), '3');
+  sql(`DELETE FROM users WHERE username = 'leaver'`);
+  assert.equal(sql(`SELECT count(*) FROM sessions`), '0');
+});
+
+test('login lookup uses the case-insensitive index', () => {
+  sql(`INSERT INTO users (display_name, username, email)
+       SELECT 'u' || g, 'user' || g, 'user' || g || '@example.com' FROM generate_series(1, 20000) g;
+       ANALYZE users;`);
+  const plan = sql(`EXPLAIN SELECT id FROM users WHERE lower(username) = lower($1) \\bind 'USER123' \\g`);
+  assert.match(plan, /users_username_uq/);
+  const planEmail = sql(`EXPLAIN SELECT id FROM users WHERE lower(email) = lower($1) \\bind 'User123@Example.com' \\g`);
+  assert.match(planEmail, /users_email_uq/);
 });

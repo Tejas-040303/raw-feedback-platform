@@ -5,7 +5,8 @@ import {
 import type { Response } from 'express';
 import { z } from 'zod';
 import { cityKey } from '../common/normalize.ts';
-import { currentUserId, parse } from '../common/validation.ts';
+import { parse } from '../common/validation.ts';
+import { AuthService } from '../auth/auth.service.ts';
 import { DatabaseService } from '../database/database.service.ts';
 import { ModerationService } from '../moderation/moderation.service.ts';
 import { buildFeedbackQuery, encodeCursor } from './feedback-query.ts';
@@ -37,6 +38,7 @@ export class FeedbackController {
   constructor(
     private readonly db: DatabaseService,
     private readonly moderation: ModerationService,
+    private readonly auth: AuthService,
   ) {}
 
   /**
@@ -77,11 +79,11 @@ export class FeedbackController {
    */
   @Post()
   async create(
-    @Headers() headers: Record<string, string>,
+    @Headers('cookie') cookie: string | undefined,
     @Body() body: unknown,
     @Res({ passthrough: true }) res: Response,
   ) {
-    const userId = currentUserId(headers);
+    const userId = (await this.auth.requireUser(cookie)).id;
     const input = parse(CreateFeedback, body);
 
     const entity = await this.db.query('SELECT 1 FROM entities WHERE id = $1', [input.entityId]);
@@ -131,8 +133,8 @@ export class FeedbackController {
   /** Idempotent: upvoting twice is a no-op, not an error and not +2. */
   @Post(':id/upvote')
   @HttpCode(204)
-  async upvote(@Headers() headers: Record<string, string>, @Param('id', ParseIntPipe) id: number) {
-    const userId = currentUserId(headers);
+  async upvote(@Headers('cookie') cookie: string | undefined, @Param('id', ParseIntPipe) id: number) {
+    const userId = (await this.auth.requireUser(cookie)).id;
     const { rowCount } = await this.db.query(
       `INSERT INTO feedback_votes (feedback_id, user_id)
        SELECT id, $2 FROM feedback WHERE id = $1 AND status = 'published'
@@ -147,8 +149,8 @@ export class FeedbackController {
 
   @Delete(':id/upvote')
   @HttpCode(204)
-  async removeUpvote(@Headers() headers: Record<string, string>, @Param('id', ParseIntPipe) id: number) {
-    const userId = currentUserId(headers);
+  async removeUpvote(@Headers('cookie') cookie: string | undefined, @Param('id', ParseIntPipe) id: number) {
+    const userId = (await this.auth.requireUser(cookie)).id;
     await this.db.query('DELETE FROM feedback_votes WHERE feedback_id = $1 AND user_id = $2', [id, userId]);
   }
 }
