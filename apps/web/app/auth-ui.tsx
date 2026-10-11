@@ -1,15 +1,34 @@
 'use client';
 
 import { useEffect, useId, useRef, useState } from 'react';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { cn } from '@/lib/utils';
 
-// Small shared pieces for the account pages (login, signup, email links).
+// Shared pieces for the account pages (login, signup, email links).
 
-export const card: React.CSSProperties = {
-  maxWidth: 400, margin: '40px auto', padding: 24, border: '1px solid #ddd', borderRadius: 8,
-  display: 'grid', gap: 14,
-};
-export const button: React.CSSProperties = { padding: '10px 14px', fontSize: 16, cursor: 'pointer' };
-export const errorText: React.CSSProperties = { color: '#b00020', fontSize: 14, margin: 0 };
+/** Centred card that holds an account form. */
+export function AuthCard({ title, description, children, className }: {
+  title: string;
+  description?: React.ReactNode;
+  children: React.ReactNode;
+  className?: string;
+}) {
+  return (
+    <Card className={cn('mx-auto mt-6 w-full max-w-sm', className)}>
+      <CardHeader>
+        <CardTitle>{title}</CardTitle>
+        {description && <CardDescription>{description}</CardDescription>}
+      </CardHeader>
+      <CardContent className="grid gap-4">{children}</CardContent>
+    </Card>
+  );
+}
+
+export function FormError({ children }: { children: React.ReactNode }) {
+  return <p role="alert" className="text-sm text-destructive">{children}</p>;
+}
 
 /** "15 minutes", "1 hour", "24 hours", from a 429's retryAfterSeconds. */
 export function waitText(seconds: number | undefined): string {
@@ -19,27 +38,42 @@ export function waitText(seconds: number | undefined): string {
   return `${hours} hour${hours === 1 ? '' : 's'}`;
 }
 
-interface FieldProps extends React.InputHTMLAttributes<HTMLInputElement> {
+interface FieldProps extends React.ComponentProps<'input'> {
   label: string;
   error?: string;
 }
 
 /** Labelled input whose error message is announced by screen readers. */
-export function Field({ label, error, ...input }: FieldProps) {
+export function Field({ label, error, className, ...input }: FieldProps) {
   const id = useId();
   const errId = `${id}-err`;
   return (
-    <div style={{ display: 'grid', gap: 4 }}>
-      <label htmlFor={id}>{label}</label>
-      <input
-        id={id}
-        {...input}
-        aria-invalid={error ? true : undefined}
-        aria-describedby={error ? errId : undefined}
-        style={{ padding: 8, fontSize: 16, borderColor: error ? '#b00020' : undefined }}
-      />
-      {error && <p id={errId} style={errorText}>{error}</p>}
+    <div className={cn('grid gap-1.5', className)}>
+      <Label htmlFor={id}>{label}</Label>
+      <Input id={id} {...input} aria-invalid={error ? true : undefined} aria-describedby={error ? errId : undefined} />
+      {error && <p id={errId} className="text-sm text-destructive">{error}</p>}
     </div>
+  );
+}
+
+/** Live checklist of password rules: green when met, red once the user has tried. */
+export function PasswordChecklist({ rules, password, showMisses }: {
+  rules: { id: string; label: string; test: (pw: string) => boolean }[];
+  password: string;
+  showMisses: boolean;
+}) {
+  return (
+    <ul aria-label="Password requirements" className="grid gap-0.5 text-sm sm:grid-cols-2">
+      {rules.map((rule) => {
+        const ok = rule.test(password);
+        return (
+          <li key={rule.id} className={ok ? 'text-success' : showMisses ? 'text-destructive' : 'text-muted-foreground'}>
+            <span aria-hidden="true">{ok ? '✓' : '○'}</span> {rule.label}
+            <span className="sr-only">{ok ? ' (met)' : ' (not met)'}</span>
+          </li>
+        );
+      })}
+    </ul>
   );
 }
 

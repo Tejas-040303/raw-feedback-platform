@@ -1,7 +1,10 @@
-import { Body, ConflictException, Controller, Get, NotFoundException, Param, ParseIntPipe, Post, Query } from '@nestjs/common';
+import {
+  Body, ConflictException, Controller, Get, Headers, NotFoundException, Param, ParseIntPipe, Post, Query,
+} from '@nestjs/common';
 import { z } from 'zod';
 import { cityKey, nameKey, slugify } from '../common/normalize.ts';
 import { parse } from '../common/validation.ts';
+import { AuthService } from '../auth/auth.service.ts';
 import { DatabaseService, UNIQUE_VIOLATION } from '../database/database.service.ts';
 
 const CreateEntity = z.object({
@@ -34,7 +37,10 @@ const ENTITY_COLUMNS = `id, category_id, name, slug, country_code, region, city,
 
 @Controller('entities')
 export class EntitiesController {
-  constructor(private readonly db: DatabaseService) {}
+  constructor(
+    private readonly db: DatabaseService,
+    private readonly auth: AuthService,
+  ) {}
 
   @Get()
   async search(@Query() query: unknown) {
@@ -74,7 +80,10 @@ export class EntitiesController {
   }
 
   @Post()
-  async create(@Body() body: unknown) {
+  async create(@Headers('cookie') cookie: string | undefined, @Body() body: unknown) {
+    // Same bar as posting feedback: anonymous visitors can't fill the
+    // directory with junk entries.
+    await this.auth.requireVerifiedUser(cookie);
     const input = parse(CreateEntity, body);
     const key = nameKey(input.name);
     const city = cityKey(input.city);

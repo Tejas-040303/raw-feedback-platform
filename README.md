@@ -31,6 +31,7 @@ Category   →  Restaurants, Travel, Automobiles, Companies, Government, NGOs, .
 | Layer | Choice | Why |
 |-------|--------|-----|
 | Frontend | **Next.js (React) + TypeScript** | Server-side rendering makes entity and feedback pages fast and indexable by search engines |
+| UI | **Tailwind CSS v4 + shadcn/ui** | Design tokens in one CSS file; accessible components copied into the repo (`apps/web/components/ui`), so they can be changed freely |
 | API | **Node.js + TypeScript (NestJS)** | One language across the stack, with a structured, modular backend |
 | Primary database | **PostgreSQL** | Category → Entity → Feedback is relational data. You get transactions, constraints, and indexes, plus `JSONB` for category-specific attributes |
 | Cache | **Redis** | Caches hot entity pages and ratings. Also handles rate limiting and sessions |
@@ -76,7 +77,10 @@ apps/
     scripts/           cross-platform dev runner, migrate and seed commands
     test/              unit tests (no dependencies needed)
     test/db/           tests that run against a real Postgres
-  web/                 Next.js frontend: filter page, post form, account pages
+  web/                 Next.js frontend
+    app/               pages: feed, entities/[id], write, account pages; globals.css holds the design tokens
+    components/        site header, review item, entity picker, write-review form
+    components/ui/     shadcn/ui building blocks (button, input, card, ...)
 db/
   migrations/          SQL schema, applied in order by apps/api/scripts/db.ts
   seed.sql             starter categories and users

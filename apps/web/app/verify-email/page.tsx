@@ -3,7 +3,8 @@
 import Link from 'next/link';
 import { useState } from 'react';
 import { API_URL } from '../api';
-import { button, card, errorText, useTokenFromUrl } from '../auth-ui';
+import { AuthCard, FormError, useTokenFromUrl } from '../auth-ui';
+import { Button } from '@/components/ui/button';
 
 export default function VerifyEmailPage() {
   const token = useTokenFromUrl();
@@ -34,24 +35,24 @@ export default function VerifyEmailPage() {
   if (token === undefined) return null;
 
   return (
-    <div style={card}>
-      <h1 style={{ margin: 0 }}>Confirm your email</h1>
-      {token === null && <p style={errorText}>This link is missing its code. Please use the link from your email.</p>}
+    <AuthCard title="Confirm your email">
+      {token === null && <FormError>This link is missing its code. Please use the link from your email.</FormError>}
 
       {token && state !== 'done' && (
         <>
-          <p style={{ margin: 0 }}>Click below to confirm this is your email address.</p>
-          <button type="button" style={button} onClick={confirm} disabled={state === 'busy'}>
+          <p className="text-sm">Click below to confirm this is your email address.</p>
+          <Button className="w-full" onClick={confirm} disabled={state === 'busy'}>
             {state === 'busy' ? 'Confirming…' : 'Confirm my email'}
-          </button>
+          </Button>
         </>
       )}
-      {state === 'error' && <p role="alert" style={errorText}>{error}</p>}
+      {state === 'error' && <FormError>{error}</FormError>}
       {state === 'done' && (
-        <p role="status" style={{ margin: 0 }}>
-          ✓ Your email is confirmed. You can now post feedback. <Link href="/">Go to the feed</Link>
+        <p role="status" className="text-sm">
+          <span className="font-semibold text-success">✓ Your email is confirmed.</span> You can now post reviews.{' '}
+          <Link href="/" className="text-primary hover:underline">Go to the feed</Link>
         </p>
       )}
-    </div>
+    </AuthCard>
   );
 }

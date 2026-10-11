@@ -3,7 +3,8 @@
 import Link from 'next/link';
 import { useState } from 'react';
 import { API_URL } from '../api';
-import { button, card, errorText, Field } from '../auth-ui';
+import { AuthCard, Field, FormError } from '../auth-ui';
+import { Button } from '@/components/ui/button';
 
 export default function ForgotPasswordPage() {
   const [email, setEmail] = useState('');
@@ -38,19 +39,20 @@ export default function ForgotPasswordPage() {
   }
 
   return (
-    <form onSubmit={submit} style={card} noValidate>
-      <h1 style={{ margin: 0 }}>Forgot your password?</h1>
+    <AuthCard
+      title="Forgot your password?"
+      description={message ? undefined : 'Enter the email you signed up with and we’ll send you a link to choose a new password.'}
+    >
       {message ? (
-        <p role="status" style={{ margin: 0 }}>{message} Check your inbox and spam folder; the link expires in 30 minutes.</p>
+        <p role="status" className="text-sm">{message} Check your inbox and spam folder; the link expires in 30 minutes.</p>
       ) : (
-        <>
-          <p style={{ margin: 0 }}>Enter the email you signed up with and we’ll send you a link to choose a new password.</p>
+        <form onSubmit={submit} className="grid gap-4" noValidate>
           <Field label="Email" type="email" autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
-          {error && <p role="alert" style={errorText}>{error}</p>}
-          <button type="submit" style={button} disabled={busy || !email}>{busy ? 'Sending…' : 'Send reset link'}</button>
-        </>
+          {error && <FormError>{error}</FormError>}
+          <Button type="submit" className="w-full" disabled={busy || !email}>{busy ? 'Sending…' : 'Send reset link'}</Button>
+        </form>
       )}
-      <p style={{ margin: 0 }}><Link href="/login">Back to log in</Link></p>
-    </form>
+      <Link href="/login" className="text-sm text-primary hover:underline">Back to log in</Link>
+    </AuthCard>
   );
 }
