@@ -29,6 +29,12 @@ export default function LoginPage() {
         router.refresh();
         return;
       }
+      if (res.status === 429) {
+        const data = await res.json().catch(() => ({}));
+        const minutes = Math.max(1, Math.ceil((data.retryAfterSeconds ?? 900) / 60));
+        setError(`Too many failed attempts. Please try again in ${minutes} minute${minutes === 1 ? '' : 's'}.`);
+        return;
+      }
       // One message for "no such user" and "wrong password", on purpose.
       setError(res.status === 401 ? 'Invalid username/email or password.' : 'Something went wrong. Please try again.');
     } catch {

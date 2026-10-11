@@ -10,7 +10,8 @@
  */
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
+import { promisify } from 'node:util';
 import { readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { buildFeedbackQuery, encodeCursor, type FeedbackFilters } from '../../src/feedback/feedback-query.ts';
@@ -208,4 +209,63 @@ test('login lookup uses the case-insensitive index', () => {
   assert.match(plan, /users_username_uq/);
   const planEmail = sql(`EXPLAIN SELECT id FROM users WHERE lower(email) = lower($1) \\bind 'User123@Example.com' \\g`);
   assert.match(planEmail, /users_email_uq/);
+});
+
+// ── Login throttling (003_login_throttle.sql) ───────────────────────────
+
+/** One login_attempt call; returns [allowed, retry_after_seconds]. */
+const attempt = (key: string, max = 3, window = '15 minutes', lock = '15 minutes') =>
+  sql(`SELECT allowed || ',' || retry_after_seconds FROM login_attempt('${key}', ${max}, '${window}', '${lock}')`);
+
+test('throttle: allows max attempts, then locks with a wait time', () => {
+  assert.equal(attempt('user:1'), 'true,0');
+  assert.equal(attempt('user:1'), 'true,0');
+  assert.equal(attempt('user:1'), 'true,0');
+  assert.equal(attempt('user:1'), 'false,900');           // 4th of max 3: locked 15 min
+  const [allowed, wait] = attempt('user:1').split(',');   // still locked, wait counts down
+  assert.equal(allowed, 'false');
+  assert.ok(Number(wait) > 0 && Number(wait) <= 900);
+  assert.equal(attempt('user:2'), 'true,0');               // other keys unaffected
+});
+
+test('throttle: lock expires and the count starts again', () => {
+  for (let i = 0; i < 3; i++) attempt('user:3', 3, '15 minutes', '1 second');
+  assert.equal(attempt('user:3', 3, '15 minutes', '1 second'), 'false,1');
+  sql('SELECT pg_sleep(1.1)');
+  assert.equal(attempt('user:3', 3, '15 minutes', '1 second'), 'true,0');
+  assert.equal(sql(`SELECT attempts FROM login_throttle WHERE key = 'user:3'`), '1');
+});
+
+test('throttle: attempts outside the window are forgotten', () => {
+  attempt('user:4', 3, '1 second');
+  attempt('user:4', 3, '1 second');
+  sql('SELECT pg_sleep(1.1)');
+  assert.equal(attempt('user:4', 3, '1 second'), 'true,0');
+  assert.equal(sql(`SELECT attempts FROM login_throttle WHERE key = 'user:4'`), '1');
+});
+
+test('throttle: success clears the account but only gives back one IP attempt', () => {
+  attempt('user:5'); attempt('user:5');
+  attempt('ip:198.51.100.1'); attempt('ip:198.51.100.1');
+  sql(`SELECT login_attempt_succeeded('user:5', 'ip:198.51.100.1')`);
+  assert.equal(sql(`SELECT count(*) FROM login_throttle WHERE key = 'user:5'`), '0');
+  assert.equal(sql(`SELECT attempts FROM login_throttle WHERE key = 'ip:198.51.100.1'`), '1');
+});
+
+test('throttle: success does not unlock a locked IP', () => {
+  for (let i = 0; i < 4; i++) attempt('ip:198.51.100.2');   // now locked
+  sql(`SELECT login_attempt_succeeded('user:6', 'ip:198.51.100.2')`);
+  assert.equal(attempt('ip:198.51.100.2').split(',')[0], 'false');
+});
+
+test('throttle: 20 simultaneous attempts against a limit of 5 allow exactly 5', async () => {
+  // Without the row lock, all 20 would read "0 attempts so far" at once and
+  // all be allowed. This is the race a check-then-record design loses.
+  const run = promisify(execFile);
+  const results = await Promise.all(Array.from({ length: 20 }, () =>
+    run('psql', [url, '-X', '-q', '-At', '-c',
+      `SELECT allowed FROM login_attempt('user:race', 5, '15 minutes', '15 minutes')`]),
+  ));
+  const allowed = results.filter((r) => r.stdout.trim() === 't').length;
+  assert.equal(allowed, 5);
 });

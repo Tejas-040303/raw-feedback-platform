@@ -204,6 +204,19 @@ How it is secured:
 - Login gives the same error, and takes the same time, whether the username doesn't
   exist or the password is wrong, so it doesn't reveal which accounts exist.
 - Sessions last 30 days. Logging out deletes the session on the server.
+- **Failed logins are rate limited** (`db/migrations/003_login_throttle.sql`):
+
+  | Limit | Allows | Then |
+  |-------|--------|------|
+  | Per account | 5 attempts / 15 min | locked for 15 min |
+  | Per IP (IPv6: per /64) | 50 attempts / 15 min | locked for 15 min |
+
+  The account limit stops guessing one user's password; the IP limit stops
+  "password spraying" (a few common passwords tried against many accounts).
+  Locks are temporary, so nobody can lock a user out for good. Blocked requests
+  get `429` with a `Retry-After` header. Counters live in Postgres, so the
+  limits hold across several API instances. Set `TRUST_PROXY` to the number of
+  proxies in front of the API, or every user will share the proxy's IP.
 
 ## Data Model
 
@@ -213,6 +226,7 @@ entities          (id, category_id, name, name_key, country_code, region, city, 
                    attributes JSONB, avg_rating, rating_count, feedback_count)
 users             (id, display_name, full_name, username, email, date_of_birth, password_hash)
 sessions          (token_hash, user_id, expires_at)
+login_throttle    (key, attempts, window_start, locked_until)
 feedback          (id, entity_id, user_id, body, rating, status, upvotes, search_tsv)
 feedback_votes    (feedback_id, user_id)          one vote per user, enforced by the primary key
 moderation_events (user_id, entity_id, decision, categories, provider)
@@ -245,7 +259,7 @@ Posting feedback and upvoting require a logged-in user.
 ## Roadmap
 
 1. ~~Project skeleton: schema, API, moderation, filters, duplicate detection~~
-2. ~~Username/password accounts~~; next: email verification, password reset, login rate limiting, "Sign in with Google"
+2. ~~Username/password accounts~~, ~~login rate limiting~~; next: email verification, password reset, "Sign in with Google"
 3. Review queue for `pending_review` posts and user abuse reports
 4. Redis caching and rate limiting; BullMQ workers for moderation and counters
 5. Read replicas and a dedicated search engine as traffic grows
