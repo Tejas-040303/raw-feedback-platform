@@ -10,11 +10,14 @@
  */
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
+import { promisify } from 'node:util';
 import { readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { buildFeedbackQuery, encodeCursor, type FeedbackFilters } from '../../src/feedback/feedback-query.ts';
 import { cityKey, nameKey } from '../../src/common/normalize.ts';
+import { SQL as TOKEN_SQL } from '../../src/auth/email-token-sql.ts';
+import { hashSessionToken } from '../../src/auth/session-token.ts';
 
 const ADMIN_URL = process.env.TEST_DATABASE_URL ?? 'postgres://rfp:rfp@localhost:5432/postgres';
 const DB = `rfp_test_${process.pid}`;
@@ -31,7 +34,8 @@ const sql = (s: string) => psql(url, s);
 
 /** Runs a parameterised query exactly as the API would, via psql's \bind. */
 function query(text: string, params: unknown[]): any[] {
-  const quote = (v: unknown) => `'${String(v).replace(/'/g, "''")}'`;
+  // psql reads backslash escapes inside quoted \bind arguments, so double them.
+  const quote = (v: unknown) => `'${String(v).replace(/\\/g, '\\\\').replace(/'/g, "''")}'`;
   const out = sql(`SELECT coalesce(json_agg(t), '[]') FROM (${text}) t \\bind ${params.map(quote).join(' ')} \\g`);
   return JSON.parse(out);
 }
@@ -208,4 +212,142 @@ test('login lookup uses the case-insensitive index', () => {
   assert.match(plan, /users_username_uq/);
   const planEmail = sql(`EXPLAIN SELECT id FROM users WHERE lower(email) = lower($1) \\bind 'User123@Example.com' \\g`);
   assert.match(planEmail, /users_email_uq/);
+});
+
+// ── Login throttling (003_login_throttle.sql) ───────────────────────────
+
+/** One login_attempt call; returns [allowed, retry_after_seconds]. */
+const attempt = (key: string, max = 3, window = '15 minutes', lock = '15 minutes') =>
+  sql(`SELECT allowed || ',' || retry_after_seconds FROM login_attempt('${key}', ${max}, '${window}', '${lock}')`);
+
+test('throttle: allows max attempts, then locks with a wait time', () => {
+  assert.equal(attempt('user:1'), 'true,0');
+  assert.equal(attempt('user:1'), 'true,0');
+  assert.equal(attempt('user:1'), 'true,0');
+  assert.equal(attempt('user:1'), 'false,900');           // 4th of max 3: locked 15 min
+  const [allowed, wait] = attempt('user:1').split(',');   // still locked, wait counts down
+  assert.equal(allowed, 'false');
+  assert.ok(Number(wait) > 0 && Number(wait) <= 900);
+  assert.equal(attempt('user:2'), 'true,0');               // other keys unaffected
+});
+
+test('throttle: lock expires and the count starts again', () => {
+  for (let i = 0; i < 3; i++) attempt('user:3', 3, '15 minutes', '1 second');
+  assert.equal(attempt('user:3', 3, '15 minutes', '1 second'), 'false,1');
+  sql('SELECT pg_sleep(1.1)');
+  assert.equal(attempt('user:3', 3, '15 minutes', '1 second'), 'true,0');
+  assert.equal(sql(`SELECT attempts FROM login_throttle WHERE key = 'user:3'`), '1');
+});
+
+test('throttle: attempts outside the window are forgotten', () => {
+  attempt('user:4', 3, '1 second');
+  attempt('user:4', 3, '1 second');
+  sql('SELECT pg_sleep(1.1)');
+  assert.equal(attempt('user:4', 3, '1 second'), 'true,0');
+  assert.equal(sql(`SELECT attempts FROM login_throttle WHERE key = 'user:4'`), '1');
+});
+
+test('throttle: success clears the account but only gives back one IP attempt', () => {
+  attempt('user:5'); attempt('user:5');
+  attempt('ip:198.51.100.1'); attempt('ip:198.51.100.1');
+  sql(`SELECT login_attempt_succeeded('user:5', 'ip:198.51.100.1')`);
+  assert.equal(sql(`SELECT count(*) FROM login_throttle WHERE key = 'user:5'`), '0');
+  assert.equal(sql(`SELECT attempts FROM login_throttle WHERE key = 'ip:198.51.100.1'`), '1');
+});
+
+test('throttle: success does not unlock a locked IP', () => {
+  for (let i = 0; i < 4; i++) attempt('ip:198.51.100.2');   // now locked
+  sql(`SELECT login_attempt_succeeded('user:6', 'ip:198.51.100.2')`);
+  assert.equal(attempt('ip:198.51.100.2').split(',')[0], 'false');
+});
+
+test('throttle: 20 simultaneous attempts against a limit of 5 allow exactly 5', async () => {
+  // Without the row lock, all 20 would read "0 attempts so far" at once and
+  // all be allowed. This is the race a check-then-record design loses.
+  const run = promisify(execFile);
+  const results = await Promise.all(Array.from({ length: 20 }, () =>
+    run('psql', [url, '-X', '-q', '-At', '-c',
+      `SELECT allowed FROM login_attempt('user:race', 5, '15 minutes', '15 minutes')`]),
+  ));
+  const allowed = results.filter((r) => r.stdout.trim() === 't').length;
+  assert.equal(allowed, 5);
+});
+
+// ── Email verification and password reset (004_email_tokens.sql) ───────
+// These run the exact statements the services use (src/auth/email-token-sql.ts).
+
+const hex = (token: string) => '\\x' + hashSessionToken(token).toString('hex');
+
+/**
+ * Runs an INSERT/UPDATE/DELETE with bound params and returns its RETURNING
+ * rows (or one {ok:1} row per affected row if it has no RETURNING clause).
+ * Data-modifying statements may only sit in a top-level WITH, not in a
+ * subquery, hence the shape.
+ */
+function mutate(statement: string, params: unknown[]): any[] {
+  const s = /\bRETURNING\b/i.test(statement) ? statement : `${statement}\nRETURNING 1 AS ok`;
+  // psql reads backslash escapes inside quoted \bind arguments, so double them.
+  const quote = (v: unknown) => `'${String(v).replace(/\\/g, '\\\\').replace(/'/g, "''")}'`;
+  return JSON.parse(sql(`WITH m AS (${s}\n) SELECT coalesce(json_agg(m), '[]') FROM m \\bind ${params.map(quote).join(' ')} \\g`));
+}
+const run = mutate;
+const consume = (token: string, purpose = 'verify_email') => mutate(TOKEN_SQL.consume, [hex(token), purpose]);
+const issue = (userId: number, email: string, token: string, purpose = 'verify_email', ttl = '1 hour') => {
+  mutate(TOKEN_SQL.retireUnused, [userId, purpose]);
+  mutate(TOKEN_SQL.insert, [hex(token), userId, purpose, email, ttl]);
+};
+
+let mailUserId: number;
+before(() => {
+  mailUserId = Number(sql(`INSERT INTO users (display_name, username, email, password_hash)
+                           VALUES ('m', 'mailuser', 'Mail.User@example.com', 'old') RETURNING id`).split('\n')[0]);
+});
+
+test('email token: works once, then never again', () => {
+  issue(mailUserId, 'Mail.User@example.com', 'token-once');
+  assert.deepEqual(consume('token-once'), [{ user_id: mailUserId, email: 'Mail.User@example.com' }]);
+  assert.deepEqual(consume('token-once'), []);
+});
+
+test('email token: wrong purpose, unknown, or expired tokens do nothing', () => {
+  issue(mailUserId, 'Mail.User@example.com', 'token-purpose');
+  assert.deepEqual(consume('token-purpose', 'reset_password'), []);   // a verify link can't reset a password
+  assert.deepEqual(consume('never-issued'), []);
+  issue(mailUserId, 'Mail.User@example.com', 'token-expired', 'reset_password', '1 second');
+  sql('SELECT pg_sleep(1.1)');
+  assert.deepEqual(consume('token-expired', 'reset_password'), []);
+});
+
+test('email token: requesting a new email retires the old link', () => {
+  issue(mailUserId, 'Mail.User@example.com', 'token-old', 'reset_password');
+  issue(mailUserId, 'Mail.User@example.com', 'token-new', 'reset_password');
+  assert.deepEqual(consume('token-old', 'reset_password'), []);
+  assert.equal(consume('token-new', 'reset_password').length, 1);
+});
+
+test('email token: 20 simultaneous clicks on one link succeed exactly once', async () => {
+  issue(mailUserId, 'Mail.User@example.com', 'token-race', 'reset_password');
+  const runAsync = promisify(execFile);
+  const statement = TOKEN_SQL.consume.replace('$1', `'${hex('token-race')}'::bytea`).replace('$2', `'reset_password'`);
+  const results = await Promise.all(Array.from({ length: 20 }, () =>
+    runAsync('psql', [url, '-X', '-q', '-At', '-c', statement])));
+  assert.equal(results.filter((r) => r.stdout.trim() !== '').length, 1);
+});
+
+test('verification only counts for the address the link was sent to', () => {
+  // Matching is case-insensitive...
+  assert.equal(run(TOKEN_SQL.markVerified, [mailUserId, 'mail.user@EXAMPLE.com']).length, 1);
+  sql(`UPDATE users SET email_verified_at = NULL WHERE id = ${mailUserId}`);
+  // ...but an old link for a previous address verifies nothing.
+  assert.equal(run(TOKEN_SQL.markVerified, [mailUserId, 'old.address@example.com']).length, 0);
+  assert.equal(sql(`SELECT email_verified_at IS NULL FROM users WHERE id = ${mailUserId}`), 't');
+});
+
+test('password reset: new hash, address verified, every session ended', () => {
+  sql(`INSERT INTO sessions (token_hash, user_id, expires_at)
+       SELECT sha256(convert_to('s' || g, 'UTF8')), ${mailUserId}, now() + interval '1 day' FROM generate_series(1, 2) g`);
+  run(TOKEN_SQL.setPassword, [mailUserId, 'new-hash', 'MAIL.USER@example.com']);
+  run(TOKEN_SQL.deleteSessions, [mailUserId]);
+  assert.equal(sql(`SELECT password_hash || ',' || (email_verified_at IS NOT NULL) FROM users WHERE id = ${mailUserId}`), 'new-hash,true');
+  assert.equal(sql(`SELECT count(*) FROM sessions WHERE user_id = ${mailUserId}`), '0');
 });

@@ -69,12 +69,13 @@ apps/
       categories/      list/create categories
       entities/        search/create entities, duplicate detection
       feedback/        list with filters, post, upvote
+      mail/            Mailer interface and email templates
       moderation/      rule-based + Claude moderators
       auth/            sign-up, login, sessions, password rules
       common/          name normalisation, validation
     test/              unit tests (no dependencies needed)
     test/db/           tests that run against a real Postgres
-  web/                 Next.js frontend: filter page, post form, /login, /signup
+  web/                 Next.js frontend: filter page, post form, account pages
 db/
   migrations/          SQL schema
   seed.sql             starter categories and users
@@ -204,6 +205,44 @@ How it is secured:
 - Login gives the same error, and takes the same time, whether the username doesn't
   exist or the password is wrong, so it doesn't reveal which accounts exist.
 - Sessions last 30 days. Logging out deletes the session on the server.
+- **Failed logins are rate limited** (`db/migrations/003_login_throttle.sql`):
+
+  | Limit | Allows | Then |
+  |-------|--------|------|
+  | Per account | 5 attempts / 15 min | locked for 15 min |
+  | Per IP (IPv6: per /64) | 50 attempts / 15 min | locked for 15 min |
+
+  The account limit stops guessing one user's password; the IP limit stops
+  "password spraying" (a few common passwords tried against many accounts).
+  Locks are temporary, so nobody can lock a user out for good. Blocked requests
+  get `429` with a `Retry-After` header. Counters live in Postgres, so the
+  limits hold across several API instances. Set `TRUST_PROXY` to the number of
+  proxies in front of the API, or every user will share the proxy's IP.
+
+### 5. Email verification and password reset
+
+```text
+Sign up ──► "Confirm your email" mail ──► /verify-email ──► click "Confirm" ──► can post
+Forgot password ──► "Reset your password" mail ──► /reset-password ──► new password
+                                                    ──► logged out on every device
+```
+
+- **Posting and upvoting need a confirmed email.** Logging in doesn't, so a user
+  who lost the first email can still log in and ask for another one.
+- Links are single-use and short-lived: 24 hours to verify, 30 minutes to reset.
+  Requesting a new email cancels the previous link. Tokens are stored only as hashes.
+- `/forgot-password` always gives the same answer, at the same speed, whether or
+  not the email has an account, so it can't be used to find out who's registered.
+- Opening a link only shows a page; the user must click a button. Email security
+  scanners open every link in a message, and would otherwise use the token up.
+- Email-sending endpoints are rate limited: 3 per hour per address, 10 per hour per IP.
+
+**Sending real email:** `apps/api/src/mail/mailer.ts` defines a `Mailer` interface.
+In development, emails (with their links) are printed to the API console. In
+production the API refuses to start until you plug in a real provider (SMTP, SES,
+Resend, ...), because printing reset links to production logs would let anyone with
+log access take over accounts. Set `WEB_ORIGIN` to the site's public URL, since
+email links are built from it.
 
 ## Data Model
 
@@ -211,8 +250,10 @@ How it is secured:
 categories        (id, parent_id, name, name_key, slug)
 entities          (id, category_id, name, name_key, country_code, region, city, city_key,
                    attributes JSONB, avg_rating, rating_count, feedback_count)
-users             (id, display_name, full_name, username, email, date_of_birth, password_hash)
+users             (id, display_name, full_name, username, email, email_verified_at, date_of_birth, password_hash)
 sessions          (token_hash, user_id, expires_at)
+login_throttle    (key, attempts, window_start, locked_until)
+email_tokens      (token_hash, user_id, purpose, email, expires_at, used_at)
 feedback          (id, entity_id, user_id, body, rating, status, upvotes, search_tsv)
 feedback_votes    (feedback_id, user_id)          one vote per user, enforced by the primary key
 moderation_events (user_id, entity_id, decision, categories, provider)
@@ -237,15 +278,19 @@ moderation_events (user_id, entity_id, decision, categories, provider)
 | POST | `/auth/login` | log in with username or email |
 | POST | `/auth/logout` | end the current session |
 | GET | `/auth/me` | the logged-in user |
+| POST | `/auth/verify-email` | confirm email with the token from the link |
+| POST | `/auth/resend-verification` | send the confirmation email again |
+| POST | `/auth/forgot-password` | email a password-reset link |
+| POST | `/auth/reset-password` | set a new password with the token from the link |
 
-Posting feedback and upvoting require a logged-in user.
+Posting feedback and upvoting require a logged-in user with a confirmed email.
 
 ---
 
 ## Roadmap
 
 1. ~~Project skeleton: schema, API, moderation, filters, duplicate detection~~
-2. ~~Username/password accounts~~; next: email verification, password reset, login rate limiting, "Sign in with Google"
+2. ~~Username/password accounts~~, ~~login rate limiting~~, ~~email verification and password reset~~; next: a real email provider, "Sign in with Google"
 3. Review queue for `pending_review` posts and user abuse reports
 4. Redis caching and rate limiting; BullMQ workers for moderation and counters
 5. Read replicas and a dedicated search engine as traffic grows

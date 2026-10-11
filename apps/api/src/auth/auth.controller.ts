@@ -1,13 +1,16 @@
 import {
-  BadRequestException, Body, ConflictException, Controller, Get, Headers, HttpCode, Post, Res,
-  UnauthorizedException,
+  BadRequestException, Body, ConflictException, Controller, Get, Headers, HttpCode, HttpException,
+  HttpStatus, Post, Req, Res, UnauthorizedException,
 } from '@nestjs/common';
-import type { Response } from 'express';
+import type { Request, Response } from 'express';
 import { z } from 'zod';
 import { parse } from '../common/validation.ts';
 import { DatabaseService, UNIQUE_VIOLATION } from '../database/database.service.ts';
 import { isEmail, validateSignup } from './account-rules.ts';
+import { AccountMailService } from './account-mail.service.ts';
 import { AuthService } from './auth.service.ts';
+import { accountKey, ipKey } from './login-throttle.ts';
+import { LoginThrottleService } from './login-throttle.service.ts';
 import { getDummyHash, hashPassword, verifyPassword } from './password-hash.ts';
 import { sessionCookie, SESSION_TTL_DAYS } from './session-token.ts';
 
@@ -37,6 +40,8 @@ export class AuthController {
   constructor(
     private readonly db: DatabaseService,
     private readonly auth: AuthService,
+    private readonly throttle: LoginThrottleService,
+    private readonly mail: AccountMailService,
   ) {}
 
   @Post('register')
@@ -48,10 +53,10 @@ export class AuthController {
     const passwordHash = await hashPassword(input.password);
     let user;
     try {
-      const { rows } = await this.db.query<{ id: number; username: string; full_name: string }>(
+      const { rows } = await this.db.query<{ id: number; username: string; full_name: string; email: string }>(
         `INSERT INTO users (display_name, full_name, username, email, date_of_birth, password_hash)
          VALUES ($1, $2, $1, $3, $4, $5)
-         RETURNING id::int AS id, username, full_name`,
+         RETURNING id::int AS id, username, full_name, email`,
         [input.username, input.name.trim(), input.email.trim(), input.dateOfBirth, passwordHash],
       );
       user = rows[0];
@@ -67,32 +72,49 @@ export class AuthController {
       throw new ConflictException({ code: 'ALREADY_EXISTS', errors });
     }
 
+    // The account exists at this point, so a mail problem must not fail the
+    // sign-up: the user can ask for another email from the site.
+    await this.mail.sendVerification(user).catch((err) => console.error('verification mail failed', err));
     res.setHeader('Set-Cookie', sessionCookie(await this.auth.createSession(user.id), TTL_SECONDS, SECURE_COOKIES));
     res.status(201);
-    return { user };
+    return { user: { ...user, email_verified: false } };
   }
 
   @Post('login')
   @HttpCode(200)
-  async login(@Body() body: unknown, @Res({ passthrough: true }) res: Response) {
+  async login(@Body() body: unknown, @Req() req: Request, @Res({ passthrough: true }) res: Response) {
     const { identifier, password } = parse(LoginBody, body);
     const column = isEmail(identifier) ? 'email' : 'username';
-    const { rows } = await this.db.query<{ id: number; username: string; full_name: string; password_hash: string | null }>(
-      `SELECT id::int AS id, username, full_name, password_hash
+    const { rows } = await this.db.query<{ id: number; username: string; full_name: string; password_hash: string | null; email_verified: boolean }>(
+      `SELECT id::int AS id, username, full_name, password_hash, email_verified_at IS NOT NULL AS email_verified
        FROM users WHERE lower(${column}) = lower($1)`,
       [identifier],
     );
     const user = rows[0];
+
+    // Count this attempt BEFORE checking the password (see 003_login_throttle.sql).
+    // req.ip is the real client only if TRUST_PROXY is set correctly (main.ts).
+    const keys = { account: accountKey(user?.id, identifier), ip: ipKey(req.ip) };
+    const waitSeconds = await this.throttle.consume(keys.account, keys.ip);
+    if (waitSeconds > 0) {
+      res.setHeader('Retry-After', String(waitSeconds));
+      throw new HttpException(
+        { code: 'TOO_MANY_ATTEMPTS', message: 'Too many failed login attempts.', retryAfterSeconds: waitSeconds },
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+    }
 
     // Always run one scrypt verification, real or dummy, so a missing
     // account takes as long as a wrong password. Same message either way.
     const ok = await verifyPassword(password, user?.password_hash ?? (await getDummyHash()));
     if (!user || !user.password_hash || !ok) throw new UnauthorizedException({ code: 'INVALID_LOGIN', message: INVALID_LOGIN });
 
+    await this.throttle.succeeded(keys.account, keys.ip);
+
     // A brand-new token on every login. Reusing a token from before login
     // would allow session fixation.
     res.setHeader('Set-Cookie', sessionCookie(await this.auth.createSession(user.id), TTL_SECONDS, SECURE_COOKIES));
-    return { user: { id: user.id, username: user.username, full_name: user.full_name } };
+    return { user: { id: user.id, username: user.username, full_name: user.full_name, email_verified: user.email_verified } };
   }
 
   @Post('logout')
