@@ -1,0 +1,164 @@
+/**
+ * Runs the real migration and the real generated SQL against Postgres.
+ *
+ *   TEST_DATABASE_URL=postgres://rfp:rfp@localhost:5432/postgres npm run test:db
+ *
+ * Creates (and drops) a throwaway database, so point it at a server where
+ * that's allowed. Uses the psql CLI instead of the pg driver so it has no
+ * npm dependencies.
+ */
+import { after, before, test } from 'node:test';
+import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { buildFeedbackQuery, encodeCursor, type FeedbackFilters } from '../../src/feedback/feedback-query.ts';
+import { cityKey, nameKey } from '../../src/common/normalize.ts';
+
+const ADMIN_URL = process.env.TEST_DATABASE_URL ?? 'postgres://rfp:rfp@localhost:5432/postgres';
+const DB = `rfp_test_${process.pid}`;
+const url = ADMIN_URL.replace(/\/[^/]*$/, `/${DB}`);
+const migration = fileURLToPath(new URL('../../../../db/migrations/001_init.sql', import.meta.url));
+
+function psql(target: string, input: string): string {
+  return execFileSync('psql', [target, '-X', '-q', '-At', '-v', 'ON_ERROR_STOP=1'], {
+    input, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'],
+  }).trim();
+}
+const sql = (s: string) => psql(url, s);
+
+/** Runs a parameterised query exactly as the API would, via psql's \bind. */
+function query(text: string, params: unknown[]): any[] {
+  const quote = (v: unknown) => `'${String(v).replace(/'/g, "''")}'`;
+  const out = sql(`SELECT coalesce(json_agg(t), '[]') FROM (${text}) t \\bind ${params.map(quote).join(' ')} \\g`);
+  return JSON.parse(out);
+}
+
+function expectUniqueViolation(statement: string) {
+  assert.throws(() => sql(statement), /duplicate key value violates unique constraint/);
+}
+
+const feed = (f: FeedbackFilters) => {
+  const built = buildFeedbackQuery(f);
+  return { rows: query(built.sql, built.params), limit: built.limit };
+};
+
+before(() => {
+  psql(ADMIN_URL, `CREATE DATABASE ${DB}`);
+  sql(`\\i ${migration}`);
+  sql(`
+    INSERT INTO users (display_name) VALUES ('a'), ('b'), ('c');
+    INSERT INTO categories (name, name_key, slug) VALUES ('Restaurants', 'restaurants', 'restaurants'),
+                                                        ('Automobiles', 'automobiles', 'automobiles');
+  `);
+});
+
+after(() => {
+  psql(ADMIN_URL, `DROP DATABASE IF EXISTS ${DB} WITH (FORCE)`);
+});
+
+test('category duplicates are blocked by normalised key', () => {
+  expectUniqueViolation(
+    `INSERT INTO categories (name, name_key, slug) VALUES ('restaurants!', '${nameKey('restaurants!')}', 'restaurants-2')`,
+  );
+});
+
+test('entity identity = category + name + place', () => {
+  const ins = (name: string, city: string | null) =>
+    `INSERT INTO entities (category_id, name, name_key, slug, country_code, city, city_key)
+     VALUES (1, '${name.replace(/'/g, "''")}', '${nameKey(name)}', '${nameKey(name).replace(/ /g, '-')}-${city ?? 'x'}',
+             'IN', ${city ? `'${city}'` : 'NULL'}, ${city ? `'${cityKey(city)}'` : 'NULL'})`;
+
+  sql(ins("Domino's", 'Pune'));
+  sql(ins("Domino's", 'Mumbai'));            // same name, different city: allowed
+  expectUniqueViolation(ins('Dominos', 'Pune'));   // same thing spelled differently: blocked
+
+  sql(ins('Online Only Store', null));
+  // NULLS NOT DISTINCT: without it, two rows with city = NULL would both be
+  // accepted, because in SQL NULL is never equal to NULL.
+  expectUniqueViolation(ins('online only store', null));
+});
+
+test('fuzzy "did you mean" finds near duplicates', () => {
+  const rows = query(
+    `SELECT name FROM entities WHERE category_id = 1 AND name_key % $1 ORDER BY similarity(name_key, $1) DESC`,
+    [nameKey('Dominoes')],
+  );
+  assert.equal(rows[0]?.name, "Domino's");
+});
+
+test('rating aggregates and upvote counters stay correct', () => {
+  sql(`
+    INSERT INTO feedback (entity_id, user_id, body, rating) VALUES (1, 1, 'great', 5), (1, 2, 'bad', 2), (1, 3, 'no rating', NULL);
+    INSERT INTO feedback_votes (feedback_id, user_id) VALUES (1, 2), (1, 3);
+  `);
+  assert.equal(sql('SELECT avg_rating || \',\' || rating_count || \',\' || feedback_count FROM entities WHERE id = 1'), '3.50,2,3');
+  assert.equal(sql('SELECT upvotes FROM feedback WHERE id = 1'), '2');
+
+  // Same user voting twice is impossible, even if the API forgot to check.
+  expectUniqueViolation('INSERT INTO feedback_votes (feedback_id, user_id) VALUES (1, 2)');
+
+  sql('DELETE FROM feedback_votes WHERE feedback_id = 1 AND user_id = 3');
+  assert.equal(sql('SELECT upvotes FROM feedback WHERE id = 1'), '1');
+
+  // Hiding a post removes it from the averages.
+  sql(`UPDATE feedback SET status = 'removed' WHERE id = 2`);
+  assert.equal(sql('SELECT avg_rating || \',\' || rating_count FROM entities WHERE id = 1'), '5.00,1');
+});
+
+test('filters: category, city, rating, upvotes, text search', () => {
+  sql(`
+    INSERT INTO entities (category_id, name, name_key, slug, country_code, city, city_key)
+      VALUES (2, 'Nexon', 'nexon', 'nexon', 'IN', NULL, NULL);
+    INSERT INTO feedback (entity_id, user_id, body, rating) VALUES
+      (2, 1, 'Mumbai branch pizza was soggy', 1),
+      ((SELECT id FROM entities WHERE name_key = 'nexon'), 1, 'Clutch failed at 20000 km', 2);
+  `);
+
+  const names = (f: FeedbackFilters) => feed(f).rows.map((r) => r.body).sort();
+
+  assert.deepEqual(names({ category: 'automobiles' }), ['Clutch failed at 20000 km']);
+  assert.deepEqual(names({ city: 'mumbai' }), ['Mumbai branch pizza was soggy']);
+  assert.deepEqual(names({ category: 'restaurants', minRating: 4 }), ['great']);
+  assert.deepEqual(names({ minUpvotes: 1 }), ['great']);
+  assert.deepEqual(names({ q: 'clutch' }), ['Clutch failed at 20000 km']);
+  assert.deepEqual(names({ country: 'in', maxRating: 2 }), ['Clutch failed at 20000 km', 'Mumbai branch pizza was soggy']);
+  // Removed posts never show up.
+  assert.ok(!names({}).includes('bad'));
+});
+
+test('cursor pagination: no row skipped or repeated, even with identical timestamps', () => {
+  // 25 posts in ONE transaction: now() is the same for all of them, so every
+  // created_at ties. Only the id tie-breaker keeps the pages apart.
+  sql(`INSERT INTO feedback (entity_id, user_id, body, rating, upvotes)
+       SELECT e.id, 1, 'bulk ' || g, (g % 5) + 1, g % 3
+       FROM generate_series(1, 25) g, entities e WHERE e.name_key = 'online only store'`);
+  const entityId = Number(sql(`SELECT id FROM entities WHERE name_key = 'online only store'`));
+
+  for (const sort of ['newest', 'top', 'rating'] as const) {
+    const seen: string[] = [];
+    let cursor: string | undefined;
+    let pages = 0;
+    do {
+      const { rows, limit } = feed({ entityId, sort, limit: 7, cursor });
+      const page = rows.slice(0, limit);
+      seen.push(...page.map((r) => String(r.id)));
+      const last = page.at(-1);
+      cursor = rows.length > limit && last ? encodeCursor(last.sort_value, last.id) : undefined;
+      pages++;
+    } while (cursor && pages < 10);
+
+    assert.equal(seen.length, 25, `${sort}: saw ${seen.length}`);
+    assert.equal(new Set(seen).size, 25, `${sort}: duplicates across pages`);
+    assert.equal(pages, 4, `${sort}: pages`);
+  }
+});
+
+test('the newest-first feed uses an index, not a full scan', () => {
+  // Realistic volume + fresh statistics, so the planner chooses on its own.
+  sql(`INSERT INTO feedback (entity_id, user_id, body, created_at)
+       SELECT 1, 1, 'load ' || g, now() - g * interval '1 minute' FROM generate_series(1, 20000) g;
+       ANALYZE;`);
+  const { sql: text, params } = buildFeedbackQuery({ sort: 'newest', limit: 20 });
+  const plan = sql(`EXPLAIN ${text} \\bind ${params.map((v) => `'${v}'`).join(' ')} \\g`);
+  assert.match(plan, /feedback_new_idx/);
+});

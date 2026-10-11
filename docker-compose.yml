@@ -1,0 +1,20 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: rfp
+      POSTGRES_PASSWORD: rfp
+      POSTGRES_DB: rfp
+    ports: ["5432:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rfp"]
+      interval: 5s
+
+  # Not used by the code yet; reserved for caching, rate limiting and the job queue.
+  redis:
+    image: redis:7
+    ports: ["6379:6379"]
+
+volumes:
+  pgdata:
