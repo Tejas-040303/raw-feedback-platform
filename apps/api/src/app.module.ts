@@ -1,4 +1,5 @@
 import { Controller, Get, Module } from '@nestjs/common';
+import { AuthModule } from './auth/auth.module.ts';
 import { CategoriesController } from './categories/categories.controller.ts';
 import { DatabaseModule } from './database/database.module.ts';
 import { DatabaseService } from './database/database.service.ts';
@@ -18,7 +19,7 @@ class HealthController {
 }
 
 @Module({
-  imports: [DatabaseModule, ModerationModule],
+  imports: [DatabaseModule, AuthModule, ModerationModule],
   controllers: [HealthController, CategoriesController, EntitiesController, FeedbackController],
 })
 export class AppModule {}

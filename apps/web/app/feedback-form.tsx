@@ -24,12 +24,15 @@ export function FeedbackForm() {
     try {
       const res = await fetch(`${API_URL}/feedback`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json', 'x-user-id': '1' }, // TODO: real auth
+        headers: { 'content-type': 'application/json' },
+        credentials: 'include', // send the session cookie to the API
         body: JSON.stringify({ entityId: Number(entityId), body, rating: rating ? Number(rating) : undefined }),
       });
       const data = await res.json();
       if (res.status === 422 && data.code === 'ABUSIVE_CONTENT') {
         setRejection({ explanation: data.explanation, suggestedRewrite: data.suggestedRewrite });
+      } else if (res.status === 401) {
+        setMessage('Please log in to post feedback.');
       } else if (res.status === 202) {
         setMessage('Thanks! Your feedback is being reviewed and will appear shortly.');
         setBody('');
