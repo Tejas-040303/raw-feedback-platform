@@ -1,0 +1,110 @@
+@import "tailwindcss";
+
+/*
+ * Design tokens. Names follow shadcn/ui, so components added later with
+ * `npx shadcn add <name>` pick up these colours automatically.
+ * Look: clean and minimal, one spruce accent kept for actions and upvotes.
+ */
+:root {
+  --radius: 0.5rem;
+
+  --background: #f7f8f7;
+  --foreground: #17201c;
+  --card: #ffffff;
+  --card-foreground: #17201c;
+  --popover: #ffffff;
+  --popover-foreground: #17201c;
+  --primary: #0f6e5c;
+  --primary-foreground: #ffffff;
+  --secondary: #eef1ef;
+  --secondary-foreground: #17201c;
+  --muted: #eef1ef;
+  --muted-foreground: #5d6a64;
+  --accent: #e2f1ec;
+  --accent-foreground: #0b5446;
+  --destructive: #b3261e;
+  --border: #dfe4e1;
+  --input: #d3dad6;
+  --ring: #0f6e5c;
+
+  /* Project-specific */
+  --warning: #9a5b00;
+  --warning-soft: #fbf0dc;
+  --success: #1f7a3d;
+  --star: #c98a00;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #101513;
+    --foreground: #e7ece9;
+    --card: #161d1a;
+    --card-foreground: #e7ece9;
+    --popover: #161d1a;
+    --popover-foreground: #e7ece9;
+    --primary: #4cc3a6;
+    --primary-foreground: #06231c;
+    --secondary: #1d2622;
+    --secondary-foreground: #e7ece9;
+    --muted: #1d2622;
+    --muted-foreground: #9aa8a1;
+    --accent: #173229;
+    --accent-foreground: #7fdcc4;
+    --destructive: #ff8a80;
+    --border: #2a3530;
+    --input: #34413b;
+    --ring: #4cc3a6;
+
+    --warning: #f0b24a;
+    --warning-soft: #33270f;
+    --success: #5fcf86;
+    --star: #f2c14e;
+    color-scheme: dark;
+  }
+}
+
+/* Exposes the tokens as Tailwind colours: bg-primary, text-muted-foreground, border-border, ... */
+@theme inline {
+  --font-sans: var(--font-body), ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-display: var(--font-heading), ui-sans-serif, system-ui, sans-serif;
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-warning: var(--warning);
+  --color-warning-soft: var(--warning-soft);
+  --color-success: var(--success);
+  --color-star: var(--star);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+  }
+  h1, h2, h3 {
+    text-wrap: balance;
+  }
+}

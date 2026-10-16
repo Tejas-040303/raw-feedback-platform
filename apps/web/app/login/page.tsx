@@ -4,7 +4,8 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 import { API_URL } from '../api';
-import { button, card, errorText, Field } from '../auth-ui';
+import { AuthCard, Field, FormError, waitText } from '../auth-ui';
+import { Button } from '@/components/ui/button';
 
 export default function LoginPage() {
   const router = useRouter();
@@ -31,8 +32,7 @@ export default function LoginPage() {
       }
       if (res.status === 429) {
         const data = await res.json().catch(() => ({}));
-        const minutes = Math.max(1, Math.ceil((data.retryAfterSeconds ?? 900) / 60));
-        setError(`Too many failed attempts. Please try again in ${minutes} minute${minutes === 1 ? '' : 's'}.`);
+        setError(`Too many failed attempts. Please try again in ${waitText(data.retryAfterSeconds ?? 900)}.`);
         return;
       }
       // One message for "no such user" and "wrong password", on purpose.
@@ -45,38 +45,34 @@ export default function LoginPage() {
   }
 
   return (
-    <form onSubmit={submit} style={card} noValidate>
-      <h1 style={{ margin: 0 }}>Log in</h1>
-
-      <Field
-        label="Username or email"
-        name="identifier"
-        autoComplete="username"
-        value={identifier}
-        onChange={(e) => setIdentifier(e.target.value)}
-        required
-      />
-      <Field
-        label="Password"
-        name="password"
-        type="password"
-        autoComplete="current-password"
-        value={password}
-        onChange={(e) => setPassword(e.target.value)}
-        required
-      />
-
-      {error && <p role="alert" style={errorText}>{error}</p>}
-
-      <button type="submit" style={button} disabled={busy || !identifier || !password}>
-        {busy ? 'Logging in…' : 'Log in'}
-      </button>
-      <p style={{ margin: 0 }}>
-        <Link href="/forgot-password">Forgot your password?</Link>
-      </p>
-      <p style={{ margin: 0 }}>
-        New here? <Link href="/signup">Create an account</Link>
-      </p>
-    </form>
+    <AuthCard title="Log in">
+      <form onSubmit={submit} className="grid gap-4" noValidate>
+        <Field
+          label="Username or email"
+          name="identifier"
+          autoComplete="username"
+          value={identifier}
+          onChange={(e) => setIdentifier(e.target.value)}
+          required
+        />
+        <Field
+          label="Password"
+          name="password"
+          type="password"
+          autoComplete="current-password"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          required
+        />
+        {error && <FormError>{error}</FormError>}
+        <Button type="submit" className="w-full" disabled={busy || !identifier || !password}>
+          {busy ? 'Logging in…' : 'Log in'}
+        </Button>
+      </form>
+      <div className="flex flex-wrap justify-between gap-2 text-sm">
+        <Link href="/forgot-password" className="text-primary hover:underline">Forgot your password?</Link>
+        <Link href="/signup" className="text-primary hover:underline">Create an account</Link>
+      </div>
+    </AuthCard>
   );
 }

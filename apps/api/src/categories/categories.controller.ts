@@ -1,7 +1,8 @@
-import { Body, ConflictException, Controller, Get, Post } from '@nestjs/common';
+import { Body, ConflictException, Controller, Get, Headers, Post } from '@nestjs/common';
 import { z } from 'zod';
 import { nameKey, slugify } from '../common/normalize.ts';
 import { parse } from '../common/validation.ts';
+import { AuthService } from '../auth/auth.service.ts';
 import { DatabaseService, UNIQUE_VIOLATION } from '../database/database.service.ts';
 
 const CreateCategory = z.object({
@@ -11,7 +12,10 @@ const CreateCategory = z.object({
 
 @Controller('categories')
 export class CategoriesController {
-  constructor(private readonly db: DatabaseService) {}
+  constructor(
+    private readonly db: DatabaseService,
+    private readonly auth: AuthService,
+  ) {}
 
   @Get()
   async list() {
@@ -22,7 +26,11 @@ export class CategoriesController {
   }
 
   @Post()
-  async create(@Body() body: unknown) {
+  async create(@Headers('cookie') cookie: string | undefined, @Body() body: unknown) {
+    // Was open to anonymous callers. A verified account is the minimum;
+    // categories shape the whole site, so this should become admin-only
+    // once roles exist.
+    await this.auth.requireVerifiedUser(cookie);
     const input = parse(CreateCategory, body);
     const key = nameKey(input.name);
     try {
